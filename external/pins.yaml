@@ -215,6 +215,28 @@ dependencies:
       clean_required: true
       lfs_skip_smudge: true
 
+  - id: "libero-assets"
+    role: "vanilla LIBERO runtime asset payloads"
+    kind: "huggingface_dataset_repository"
+    url: "https://huggingface.co/datasets/lerobot/libero-assets"
+    local_path: "external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6"
+    revision: "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6"
+    resolved_from: "refs/heads/main"
+    resolved_ref: "refs/heads/main"
+    resolved_revision: "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6"
+    retrieval_date: "2026-08-25"
+    reason: "Exact immutable LIBERO asset tree required by the pinned hf-libero 0.1.4 runtime; materialized locally for fail-closed reset and RGB rendering."
+    compatibility_notes:
+      - "The pinned hf-libero downloader otherwise calls snapshot_download without a revision; the preflight binds this verified directory through an environment-local site-packages symlink and keeps Hub offline."
+      - "The retrieved tree contains the vanilla LIBERO articulated, scanned-object, scene, and texture directories; no camera perturbation or LIBERO-Plus assets are included."
+      - "All retrieved payload files are real bytes at this revision; Git-LFS pointer text is rejected by the artifact manifest gate."
+    materialization:
+      path: "/public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6"
+      expected_status: "materialized"
+      observed_status: "materialized_and_verified"
+      expected_clean: true
+      observed_clean: true
+
   - id: "libero-plus-assets"
     role: "LIBERO-Plus asset archive metadata"
     kind: "huggingface_dataset_repository"
