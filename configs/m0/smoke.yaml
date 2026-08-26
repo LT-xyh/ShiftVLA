@@ -1,0 +1,30 @@
+schema_version: 1
+seed: 2027
+suite: libero_spatial
+task_id: 0
+init_state_id: 0
+n_envs: 1
+use_async_envs: false
+obs_type: pixels_agent_pos
+observation_height: 360
+observation_width: 360
+action_dim: 7
+chunk_size: 50
+n_action_steps: 1
+device: auto
+checkpoint:
+  repo_id: HuggingFaceVLA/smolvla_libero
+  revision: 6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/smolvla_libero/6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+base_model:
+  repo_id: HuggingFaceTB/SmolVLM2-500M-Instruct
+  revision: 7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/smolvlm2-500m-instruct/7b375e1b73b11138ff12fe22c8f2822d8fe03467
+assets:
+  repo_id: lerobot/libero-assets
+  revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+preflight_manifest: /public/home/xuyinghao/workspace/vla/runtime/manifests/m0_preflight_b_artifacts.json
+runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-runtime.txt
+libero_config_path: /public/home/xuyinghao/tmp/shiftvla-libero-config
+output_root: /public/home/xuyinghao/workspace/vla/runs/m0_smoke

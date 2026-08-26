@@ -1,0 +1,60 @@
+{
+  "action_summary": {
+    "all_equal_postprocessed": true,
+    "all_finite": true,
+    "all_shape_1x7": true,
+    "count": 280,
+    "dtype_counts": {
+      "float32": 280
+    },
+    "max": null,
+    "min": null,
+    "shape_counts": {
+      "(1, 7)": 280
+    }
+  },
+  "env_step_call_count": 280,
+  "latency_seconds": {
+    "env_step": {
+      "count": 280,
+      "max": 0.3336790595203638,
+      "mean": 0.28040486302093737,
+      "median": 0.27925432473421097,
+      "min": 0.25569723919034004,
+      "p95": 0.3037894328124821,
+      "total": 78.51336164586246
+    },
+    "inference": {
+      "count": 280,
+      "max": 31.881799230352044,
+      "mean": 29.003339646051504,
+      "median": 28.970157507807016,
+      "min": 27.159399650990963,
+      "p95": 30.373598731588572,
+      "total": 8120.935100894421
+    },
+    "render": {
+      "count": 281,
+      "max": 0.0004426129162311554,
+      "mean": 0.0002267952292521229,
+      "median": 0.00021643191576004028,
+      "min": 0.0001371130347251892,
+      "p95": 0.00032838061451911926,
+      "total": 0.06372945941984653
+    }
+  },
+  "official_done_final": true,
+  "policy_call_count": 280,
+  "queue_semantics": {
+    "all_decisions_end_empty": true,
+    "all_decisions_generated_chunk": true,
+    "all_decisions_start_empty": true,
+    "configured_chunk_size": 50,
+    "configured_n_action_steps": 1
+  },
+  "render_call_count": 281,
+  "reward_sum": 0.0,
+  "rollout_length": 280,
+  "success": false,
+  "termination_reason": "official_horizon"
+}
