@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 import hashlib
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import numpy as np
@@ -22,6 +23,7 @@ from scripts.m0_smoke import (
     _assert_renderer_environment,
     _assert_rollout_acceptance,
     _ensure_asset_symlink,
+    _git_evidence,
     _load_yaml,
     make_render_callback,
     _manifest_base,
@@ -260,6 +262,41 @@ def test_manifest_base_initialization_records_runtime_lock_without_undefined_con
 
     assert manifest["runtime_lock"]["path"] == str(Path(config["runtime_lock"]).resolve())
     assert len(manifest["runtime_lock"]["lock_sha256"]) == 64
+
+
+def test_git_evidence_preserves_porcelain_status_columns_for_modified_paths(tmp_path) -> None:
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "AGENTS.md"
+    tracked.write_text("initial\n")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Smoke Test",
+            "-c",
+            "user.email=smoke@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    tracked.write_text("modified\n")
+
+    evidence = _git_evidence(tmp_path)
+
+    assert evidence["status"]["stdout"] == " M AGENTS.md"
+    assert evidence["dirty_files"] == [
+        {
+            "path": "AGENTS.md",
+            "status": " M",
+            "sha256": hashlib.sha256(b"modified\n").hexdigest(),
+            "bytes": len(b"modified\n"),
+        }
+    ]
 
 
 def test_renderer_environment_gate_requires_exact_egl_settings(monkeypatch) -> None:

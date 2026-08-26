@@ -607,7 +607,7 @@ def _run_command(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
         return {
             "args": args,
             "returncode": completed.returncode,
-            "stdout": completed.stdout.strip(),
+            "stdout": completed.stdout.rstrip("\r\n"),
             "stderr": completed.stderr.strip(),
         }
     except Exception as exc:
