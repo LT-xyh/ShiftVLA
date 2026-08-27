@@ -20,6 +20,7 @@ from scripts.dcu_model_worker import (
     SELECT_REQUEST_SCHEMA,
     DCUModelWorker,
     JSONLWorkerServer,
+    _enforce_eager_attention,
     build_official_policy,
     load_worker_config,
     validate_device,
@@ -151,6 +152,63 @@ class FakeLoadedPolicy(FakePolicy):
         )
 
 
+class FakeAttentionConfig:
+    def __init__(self, implementation: str = "legacy") -> None:
+        self._attn_implementation = implementation
+        self._flash_attn_2_enabled = True
+
+
+class LockedAttentionConfig(FakeAttentionConfig):
+    def __init__(self, implementation: str = "legacy") -> None:
+        self._implementation = implementation
+        self._flash_attn_2_enabled = True
+
+    @property
+    def _attn_implementation(self) -> str:
+        return self._implementation
+
+    @_attn_implementation.setter
+    def _attn_implementation(self, value: str) -> None:
+        if value == "eager":
+            raise RuntimeError("eager attention is locked")
+        self._implementation = value
+
+
+class FakeAttentionPolicy(FakeLoadedPolicy):
+    def __init__(self, config_cls: type[FakeAttentionConfig] = FakeAttentionConfig) -> None:
+        super().__init__()
+        vlm_config = config_cls()
+        vlm_config.text_config = config_cls()
+        vlm_config.vision_config = config_cls()
+        expert_config = config_cls()
+        self.model = SimpleNamespace(
+            vlm_with_expert=SimpleNamespace(
+                config=vlm_config,
+                vlm=SimpleNamespace(config=vlm_config),
+                lm_expert=SimpleNamespace(config=expert_config),
+            )
+        )
+
+
+class DynamicForbiddenPolicy(FakePolicy):
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        super().__init__()
+        self._monkeypatch = monkeypatch
+
+    def _import_forbidden(self) -> None:
+        self._monkeypatch.setitem(sys.modules, "flash_attn", SimpleNamespace(__name__="flash_attn"))
+
+    def predict_action_chunk(
+        self, batch: dict[str, torch.Tensor], noise: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        self._import_forbidden()
+        return super().predict_action_chunk(batch, noise)
+
+    def select_action(self, batch: dict[str, torch.Tensor], **kwargs: object) -> torch.Tensor:
+        self._import_forbidden()
+        return super().select_action(batch, **kwargs)
+
+
 def _write_request(tmp_path: Path, name: str, bundle: dict[str, torch.Tensor], schema: object) -> Path:
     path = tmp_path / name
     save_tensor_bundle(path, bundle, schema=schema)  # type: ignore[arg-type]
@@ -209,6 +267,27 @@ def test_forbidden_mamba_backend_is_rejected_before_policy_use(
     monkeypatch.setitem(sys.modules, module_name, module)
     with pytest.raises(DCUPreflightError, match="forbidden backend"):
         DCUModelWorker(policy=FakePolicy(), device_adapter=FakeDevice(), seed=2027)
+
+
+@pytest.mark.parametrize("command", ["predict_action_chunk", "select_action"])
+def test_forbidden_backend_is_rechecked_after_each_action_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    worker = DCUModelWorker(
+        policy=DynamicForbiddenPolicy(monkeypatch), device_adapter=FakeDevice(), seed=2027
+    )
+    server = JSONLWorkerServer(worker, response_dir=tmp_path)
+    worker.reset()
+    if command == "predict_action_chunk":
+        request_path = _write_request(
+            tmp_path, "predict.safetensors", _predict_bundle(), PREDICT_REQUEST_SCHEMA
+        )
+    else:
+        request_path = _write_request(
+            tmp_path, "features.safetensors", _feature_bundle(), FEATURE_SCHEMA
+        )
+    with pytest.raises(DCUPreflightError, match="forbidden backend"):
+        server.handle({"id": command, "command": command, "request_path": str(request_path)})
 
 
 def test_startup_and_ping_report_basic_eager_runtime_evidence() -> None:
@@ -461,7 +540,7 @@ def test_official_loader_uses_pinned_factories_and_strict_reload(tmp_path: Path)
 
     def fake_make_policy(*, cfg: object, env_cfg: object, rename_map: object) -> FakePolicy:
         policy_calls.append({"cfg": cfg, "env_cfg": env_cfg, "rename_map": rename_map})
-        return FakeLoadedPolicy()
+        return FakeAttentionPolicy()
 
     policy = build_official_policy(
         config,
@@ -494,6 +573,36 @@ def test_official_loader_uses_pinned_factories_and_strict_reload(tmp_path: Path)
     assert evidence["torch_version"] == torch.__version__
     assert evidence["torch_hip_version"] == "fake-hip"
     assert evidence["torch_cuda_version"] is None
+    assert evidence["attention"]["requested"] == "eager"
+    assert evidence["attention"]["prior"] == {
+        "vlm": {
+            "_attn_implementation": "legacy",
+            "_flash_attn_2_enabled": True,
+        },
+        "vlm.text": {
+            "_attn_implementation": "legacy",
+            "_flash_attn_2_enabled": True,
+        },
+        "vlm.vision": {
+            "_attn_implementation": "legacy",
+            "_flash_attn_2_enabled": True,
+        },
+        "action_expert": {
+            "_attn_implementation": "legacy",
+            "_flash_attn_2_enabled": True,
+        },
+    }
+    assert all(
+        entry["_attn_implementation"] == "eager"
+        for entry in evidence["attention"]["effective"].values()
+    )
+    assert evidence["attention_prior"] == evidence["attention"]["prior"]
+    assert evidence["attention_effective"] == evidence["attention"]["effective"]
+
+
+def test_eager_attention_enforcement_fails_closed_when_config_rejects_it() -> None:
+    with pytest.raises(DCUPreflightError, match="eager"):
+        _enforce_eager_attention(FakeAttentionPolicy(config_cls=LockedAttentionConfig))
 
 
 def test_load_worker_config_is_local_yaml_only(tmp_path: Path) -> None:

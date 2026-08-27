@@ -377,6 +377,90 @@ def _forbidden_modules() -> list[str]:
     return sorted(name for name in names if name in _FORBIDDEN_BACKENDS)
 
 
+def _assert_no_forbidden_backends() -> None:
+    forbidden = _forbidden_modules()
+    if forbidden:
+        raise _error(f"forbidden backend imported: {', '.join(forbidden)}")
+
+
+def _attention_config_evidence(config: Any) -> dict[str, Any]:
+    missing = object()
+    implementation = getattr(config, "_attn_implementation", missing)
+    if implementation is missing:
+        raise _error("attention config does not expose _attn_implementation")
+    legacy_flash = getattr(config, "_flash_attn_2_enabled", None)
+    if not isinstance(implementation, (str, type(None), bool, int, float, dict, list, tuple)):
+        implementation = repr(implementation)
+    if not isinstance(legacy_flash, (str, type(None), bool, int, float, dict, list, tuple)):
+        legacy_flash = repr(legacy_flash)
+    return {
+        "_attn_implementation": implementation,
+        "_flash_attn_2_enabled": legacy_flash,
+    }
+
+
+def _enforce_eager_attention(policy: Any) -> dict[str, Any]:
+    """Configure every SmolVLA attention config to standard Transformers eager."""
+
+    model = getattr(policy, "model", None)
+    vlm_with_expert = getattr(model, "vlm_with_expert", None)
+    path_prefix = "model.vlm_with_expert"
+    if vlm_with_expert is None:
+        # Keep a narrow fake-policy seam for unit tests while preferring the
+        # exact pinned SmolVLAPolicy.model.vlm_with_expert path above.
+        vlm_with_expert = getattr(policy, "vlm_with_expert", None)
+        path_prefix = "vlm_with_expert"
+    if vlm_with_expert is None:
+        raise _error(f"SmolVLA policy is missing {path_prefix} attention modules")
+    vlm = getattr(vlm_with_expert, "vlm", None)
+    vlm_config = getattr(vlm, "config", None)
+    if vlm_config is None:
+        vlm_config = getattr(vlm_with_expert, "config", None)
+    if vlm_config is None:
+        raise _error(f"{path_prefix}.vlm is missing its attention config")
+    text_config = getattr(vlm_config, "text_config", None)
+    if text_config is None:
+        raise _error(f"{path_prefix}.vlm.config is missing text_config for eager attention")
+    vision_config = getattr(vlm_config, "vision_config", None)
+    lm_expert = getattr(vlm_with_expert, "lm_expert", None)
+    expert_config = getattr(lm_expert, "config", None)
+    if expert_config is None:
+        raise _error(f"{path_prefix}.lm_expert is missing its attention config")
+
+    configs: dict[str, Any] = {
+        "vlm": vlm_config,
+        "vlm.text": text_config,
+        "action_expert": expert_config,
+    }
+    if vision_config is not None:
+        configs["vlm.vision"] = vision_config
+    prior = {name: _attention_config_evidence(config) for name, config in configs.items()}
+    for name, config in configs.items():
+        try:
+            # This is the supported Transformers config API.  Assigning the
+            # root also recurses through registered sub-configs; explicit
+            # child assignments make the invariant hold for compatible fake
+            # configs and for models with nonstandard config registration.
+            config._attn_implementation = "eager"
+        except Exception as exc:
+            raise _error(f"could not enforce eager attention for {name}: {exc}") from exc
+    effective = {name: _attention_config_evidence(config) for name, config in configs.items()}
+    not_eager = [
+        name
+        for name, evidence in effective.items()
+        if evidence["_attn_implementation"] != "eager"
+    ]
+    if not_eager:
+        raise _error(
+            "eager attention enforcement failed for: " + ", ".join(not_eager)
+        )
+    return {
+        "requested": "eager",
+        "prior": prior,
+        "effective": effective,
+    }
+
+
 def _model_parameter_evidence(policy: Any) -> dict[str, Any]:
     """Summarize parameters and fail closed on any non-cuda:0 parameter."""
 
@@ -521,6 +605,7 @@ def build_official_policy(
             EXPECTED_DEVICE,
             strict=True,
         )
+        attention_evidence = _enforce_eager_attention(policy)
         eval_method = getattr(policy, "eval", None)
         if callable(eval_method):
             eval_method()
@@ -529,9 +614,7 @@ def build_official_policy(
         load_latency = time.perf_counter() - load_started
         peak_memory = int(max_memory()) if callable(max_memory) else 0
 
-    forbidden_after = _forbidden_modules()
-    if forbidden_after:
-        raise _error(f"forbidden backend imported: {', '.join(forbidden_after)}")
+    _assert_no_forbidden_backends()
     if bool(getattr(policy, "training", False)):
         raise _error("loaded policy must be in eval mode")
     parameter_evidence = _model_parameter_evidence(policy)
@@ -559,6 +642,9 @@ def build_official_policy(
         "torch_version": str(torch.__version__),
         "torch_hip_version": hip_version,
         "torch_cuda_version": cuda_version,
+        "attention": attention_evidence,
+        "attention_prior": attention_evidence["prior"],
+        "attention_effective": attention_evidence["effective"],
         **parameter_evidence,
     }
     setattr(policy, "_dcu_model_evidence", policy_evidence)
@@ -786,6 +872,7 @@ class DCUModelWorker:
                 result = self.policy.predict_action_chunk(batch, noise=noise)
             if callable(synchronize):
                 synchronize()
+            _assert_no_forbidden_backends()
             latency = time.perf_counter() - started
             peak_memory = int(max_memory()) if callable(max_memory) else 0
         if not isinstance(result, torch.Tensor) or tuple(result.shape) != EXPECTED_CHUNK_SHAPE:
@@ -831,6 +918,7 @@ class DCUModelWorker:
                 result = self.policy.select_action(batch)
             if callable(synchronize):
                 synchronize()
+            _assert_no_forbidden_backends()
             latency = time.perf_counter() - started
             peak_memory = int(max_memory()) if callable(max_memory) else 0
         if not isinstance(result, torch.Tensor) or tuple(result.shape) != EXPECTED_ACTION_SHAPE:
