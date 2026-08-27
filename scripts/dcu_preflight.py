@@ -119,7 +119,8 @@ EXPECTED_OFFLINE_ENV = {
 EXPECTED_RENDERER_ENV = {
     "MUJOCO_GL": "egl",
     "PYOPENGL_PLATFORM": "egl",
-    "MUJOCO_EGL_DEVICE_ID": "0",
+    # Host-specific EGL ordinal preserving the exact frozen M0 renderer identity.
+    "MUJOCO_EGL_DEVICE_ID": "8",
 }
 
 PHASES = ("compare", "closed-loop", "concurrency")

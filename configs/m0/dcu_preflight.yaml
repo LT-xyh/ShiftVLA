@@ -93,7 +93,8 @@ offline:
 renderer:
   MUJOCO_GL: egl
   PYOPENGL_PLATFORM: egl
-  MUJOCO_EGL_DEVICE_ID: "0"
+  # Host-specific ordinal preserving the exact frozen M0 renderer identity.
+  MUJOCO_EGL_DEVICE_ID: "8"
 
 output:
   root: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight

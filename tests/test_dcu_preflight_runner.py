@@ -18,6 +18,7 @@ import yaml
 
 from scripts.dcu_preflight import (
     DCUPreflightError,
+    EXPECTED_RENDERER_ENV,
     ONE_STEP_CHILD_TOKEN,
     FeatureOnlyRemotePolicy,
     build_concurrency_child_command,
@@ -149,6 +150,27 @@ def test_config_uses_accepted_locks_directory_semantics_and_bounded_timeouts() -
     assert config["runtime"]["worker_startup_timeout_seconds"] == 300
     assert config["runtime"]["worker_forward_timeout_seconds"] == 300
     assert config["runtime"]["worker_shutdown_timeout_seconds"] == 30
+
+
+def test_host_egl_ordinal_rejects_device_zero_and_requires_device_eight() -> None:
+    config = _config()
+    assert EXPECTED_RENDERER_ENV["MUJOCO_EGL_DEVICE_ID"] == "8"
+    assert config["renderer"]["MUJOCO_EGL_DEVICE_ID"] == "8"
+    validate_config_identity(
+        config,
+        expected_project_sha="sha",
+        actual_project_sha="sha",
+    )
+
+    zero_config = dict(config)
+    zero_config["renderer"] = dict(config["renderer"])
+    zero_config["renderer"]["MUJOCO_EGL_DEVICE_ID"] = "0"
+    with pytest.raises(DCUPreflightError, match="renderer environment"):
+        validate_config_identity(
+            zero_config,
+            expected_project_sha="sha",
+            actual_project_sha="sha",
+        )
 
 
 def test_config_mode_is_not_a_phase_selector() -> None:
