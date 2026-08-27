@@ -337,6 +337,28 @@ def test_physical_device_isolated_as_logical_cuda_zero() -> None:
         map_physical_to_logical(-1)
 
 
+def test_worker_environment_drops_exported_bash_functions_but_keeps_guards() -> None:
+    bash_function_key = "BASH_FUNC_demo%%"
+    environment = build_worker_environment(
+        1,
+        {bash_function_key: "() { echo exported;\n}", "SAFE": "ok"},
+    )
+    assert bash_function_key not in environment
+    assert environment["SAFE"] == "ok"
+
+    for invalid in (
+        {"SAFE": "line\nvalue"},
+        {"SAFE": "nul\x00value"},
+        {"BAD\nKEY": "ok"},
+        {"BAD\x00KEY": "ok"},
+    ):
+        with pytest.raises(DCUPreflightError, match="NUL/newline"):
+            build_worker_environment(1, invalid)
+
+    with pytest.raises(DCUPreflightError, match="NUL/newline"):
+        build_worker_environment(1, {bash_function_key: "() { nul\x00; }"})
+
+
 def test_forbidden_backend_detection_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert validate_forbidden_backends(imported_modules=[])["forbidden"] == []
     fake = ModuleType("flash_attn")

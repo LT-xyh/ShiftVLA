@@ -705,7 +705,11 @@ def build_worker_environment(
     for key, value in base_environment.items():
         if not isinstance(key, str) or not isinstance(value, str):
             raise DCUPreflightError("worker environment keys and values must be strings")
-        if "\x00" in key or "\x00" in value or "\n" in key or "\n" in value:
+        if "\x00" in key or "\x00" in value:
+            raise DCUPreflightError("worker environment contains an invalid NUL/newline")
+        if key.startswith("BASH_FUNC_") and key.endswith("%%"):
+            continue
+        if "\n" in key or "\n" in value:
             raise DCUPreflightError("worker environment contains an invalid NUL/newline")
         result[key] = value
     expected_hip = mapping["hip_visible_devices"]
