@@ -1,0 +1,114 @@
+schema_version: 1
+name: dcu_preflight
+# The required CLI phase selects exactly one runner; this field is phase-neutral.
+mode: explicit_phase
+
+# These duplicated scalar fields keep the M0 contract easy to inspect from
+# shell tooling.  The nested sections below are authoritative to the runner.
+seed: 2027
+suite: libero_spatial
+task_id: 0
+init_state_id: 0
+observation_height: 360
+observation_width: 360
+obs_type: pixels_agent_pos
+n_envs: 1
+use_async_envs: false
+action_dim: 7
+chunk_size: 50
+n_action_steps: 1
+horizon: 280
+
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+  observation_height: 360
+  observation_width: 360
+  horizon: 280
+
+checkpoint:
+  repo_id: HuggingFaceVLA/smolvla_libero
+  revision: 6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/smolvla_libero/6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  model_sha256: 71d9563c8295284acba8fc2d5c19de000d6fe9ba58a406832af7ef3d221ed52f
+
+base_model:
+  repo_id: HuggingFaceTB/SmolVLM2-500M-Instruct
+  revision: 7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/smolvlm2-500m-instruct/7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  model_sha256: b9bfd456c9472c0acd5719d6e514c4b859891af205ee1a736552fd3497b8b0c3
+
+assets:
+  repo_id: lerobot/libero-assets
+  revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  manifest_sha256: 1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85
+
+libero_config:
+  path: /public/home/xuyinghao/tmp/shiftvla-libero-config/config.yaml
+  sha256: 98d57e0d3d7b70bab5c66a110ecc333c737895e9dcd457c06ec94b4150e0ecc8
+libero_config_path: /public/home/xuyinghao/tmp/shiftvla-libero-config
+
+preflight_manifest: /public/home/xuyinghao/workspace/vla/runtime/manifests/m0_preflight_b_artifacts.json
+preflight_manifest_sha256: 1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85
+
+m0_reference:
+  run_manifest_path: /public/home/xuyinghao/workspace/vla/runs/m0_smoke/20260825T075758Z_2_f664c2fe/run_manifest.json
+  run_manifest_sha256: bf5c510f1e2c9fbdb0c27dca55f8682bcaaaad6e9bc8c3385aa788501eb91506
+  decisions_path: /public/home/xuyinghao/workspace/vla/runs/m0_smoke/20260825T075758Z_2_f664c2fe/decisions.jsonl
+  decisions_sha256: 6d4c65d0fb8e3829971fb8b1023641172683c7fcf019f831823719ccd2299267
+
+runtime:
+  cpu_python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+  dcu_python: /public/home/xuyinghao/tmp/shiftvla-libero-dcu/bin/python
+  cpu_runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-runtime.txt
+  dcu_runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-dcu-runtime.txt
+  worker_startup_timeout_seconds: 300
+  worker_forward_timeout_seconds: 300
+  worker_shutdown_timeout_seconds: 30
+  physical_devices: [0, 1]
+  compare_physical_device: 1
+  closed_loop_physical_device: 1
+  parent_device: cpu
+  logical_device: cuda:0
+  renderer_device: llvmpipe
+  card0_reason: "physical card 0 is externally occupied; single-card phases are pinned to physical card 1"
+
+patch:
+  path: /public/home/xuyinghao/workspace/vla/runtime/patches/lerobot-v0.6.1-python311.patch
+  sha256: 3ebaba1e8d305c93d0c758c9c9d3a575215ebe3513e486ae5503da444f8d573d
+  overlay_wheel_path: /public/home/xuyinghao/tmp/shiftvla-lerobot-py311/wheels/lerobot-0.6.1-py3-none-any.whl
+  overlay_wheel_sha256: d03459fe530b556398bab41ad7de60b47c3354ffa7a5ce44db6249571fcdd2ff
+  applies_only_to: explicit_dcu_runtime
+
+offline:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_DATASETS_OFFLINE: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+
+renderer:
+  MUJOCO_GL: egl
+  PYOPENGL_PLATFORM: egl
+  MUJOCO_EGL_DEVICE_ID: "0"
+
+output:
+  root: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight
+
+runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-runtime.txt
+runtime_lock_sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
+dcu_runtime_lock_sha256: c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a
+
+concurrency:
+  workers: 2
+  physical_devices: [0, 1]
+  logical_device: cuda:0
+
+project:
+  allowed_dirty_paths:
+    - AGENTS.md
+  allowed_dirty_sha256:
+    AGENTS.md: edb351e926097b9b6a39b3d6900c48797e7d666bd132e2ad48b6ab711920314b

@@ -1,0 +1,568 @@
+"""Fake-only tests for the explicit DCU preflight phase runner.
+
+These tests must not construct a model, simulator, LeRobot environment, or
+accelerator.  Real phase entry points are exercised only through injected
+dependencies and project-owned validation seams.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+import numpy as np
+import pytest
+import torch
+import yaml
+
+from scripts.dcu_preflight import (
+    DCUPreflightError,
+    ONE_STEP_CHILD_TOKEN,
+    FeatureOnlyRemotePolicy,
+    build_concurrency_child_command,
+    dispatch_phase,
+    run_phase,
+    validate_config_identity,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT / "configs/m0/dcu_preflight.yaml"
+
+
+def _config() -> dict[str, object]:
+    return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+class _FakeEnv:
+    def __init__(self) -> None:
+        self.reset_count = 0
+        self.step_count = 0
+        self.render_count = 0
+
+    def reset(self, *, seed: int) -> dict[str, object]:
+        self.reset_count += 1
+        return {"seed": seed}
+
+    def render(self) -> np.ndarray:
+        self.render_count += 1
+        return np.zeros((360, 360, 3), dtype=np.uint8)
+
+    def step(self, action: np.ndarray) -> tuple[dict[str, object], float, bool, bool, dict[str, object]]:
+        self.step_count += 1
+        return {"seed": 2027}, 0.0, True, False, {"is_success": True}
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.reset_count = 0
+        self.select_count = 0
+
+    def reset(self, *, seed: int) -> dict[str, object]:
+        self.reset_count += 1
+        return {"queue_length_after": 0, "seed": seed}
+
+    def select_action(self, request_path: Path) -> torch.Tensor:
+        self.select_count += 1
+        return torch.zeros((1, 7), dtype=torch.float32)
+
+    def close(self) -> None:
+        return None
+
+
+def test_feature_only_remote_policy_rejects_noise_and_preserves_queue_evidence() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls: list[Path] = []
+
+        def select_action(self, request_path: Path) -> torch.Tensor:
+            self.calls.append(request_path)
+            return torch.ones((1, 7), dtype=torch.float32)
+
+    client = Client()
+    policy = FeatureOnlyRemotePolicy(client, request_writer=lambda bundle: Path(bundle["path"]))
+    action = policy.select_action({"path": "/tmp/features.safetensors"})
+    assert tuple(action.shape) == (1, 7)
+    assert client.calls == [Path("/tmp/features.safetensors")]
+    assert policy.last_queue_evidence == {}
+    with pytest.raises(DCUPreflightError, match="feature-only"):
+        policy.select_action({"path": "/tmp/features.safetensors", "noise": torch.zeros((1, 50, 32))})
+
+
+def test_feature_only_remote_policy_filters_non_wire_fields_and_checks_queue() -> None:
+    features = {
+        "observation.state": torch.zeros((1, 8), dtype=torch.float32),
+        "observation.images.image": torch.zeros((1, 3, 360, 360), dtype=torch.float32),
+        "observation.images.image2": torch.zeros((1, 3, 360, 360), dtype=torch.float32),
+        "observation.language.tokens": torch.zeros((1, 4), dtype=torch.int64),
+        "observation.language.attention_mask": torch.ones((1, 4), dtype=torch.bool),
+        "task": ["ignored complementary data"],
+    }
+    captured: list[dict[str, object]] = []
+
+    class Client:
+        last_queue_evidence = {
+            "queue_length_before": 0,
+            "queue_length_after": 0,
+            "new_chunk_generated": True,
+        }
+
+        def select_action(self, path: Path) -> torch.Tensor:
+            assert path.suffix == ".safetensors"
+            return torch.zeros((1, 7), dtype=torch.float32)
+
+    policy = FeatureOnlyRemotePolicy(
+        Client(),
+        request_writer=lambda bundle: captured.append(dict(bundle)) or Path("/tmp/features.safetensors"),
+    )
+    policy.select_action(features)
+    assert len(captured) == 1
+    assert set(captured[0]) == {
+        "observation.state",
+        "observation.images.image",
+        "observation.images.image2",
+        "observation.language.tokens",
+        "observation.language.attention_mask",
+    }
+    assert "task" not in captured[0]
+    assert policy.last_queue_evidence["new_chunk_generated"] is True
+
+
+def test_dispatch_phase_does_not_chain_compare_into_closed_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr("scripts.dcu_preflight.run_compare", lambda **_: calls.append("compare") or 0)
+    monkeypatch.setattr("scripts.dcu_preflight.run_closed_loop", lambda **_: calls.append("closed-loop") or 0)
+    config = _config()
+    assert dispatch_phase("compare", config=config, expected_project_sha="sha", actual_project_sha="sha") == 0
+    assert calls == ["compare"]
+
+
+def test_config_uses_accepted_locks_directory_semantics_and_bounded_timeouts() -> None:
+    config = _config()
+    assert config["mode"] == "explicit_phase"
+    assert config["runtime"]["cpu_runtime_lock"].endswith("runtime/locks/shiftvla-libero-runtime.txt")
+    assert config["runtime_lock_sha256"] == "921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc"
+    assert config["dcu_runtime_lock_sha256"] == "c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a"
+    assert config["libero_config_path"].endswith("/shiftvla-libero-config")
+    assert config["libero_config"]["path"].endswith("/shiftvla-libero-config/config.yaml")
+    assert config["runtime"]["worker_startup_timeout_seconds"] == 300
+    assert config["runtime"]["worker_forward_timeout_seconds"] == 300
+    assert config["runtime"]["worker_shutdown_timeout_seconds"] == 30
+
+
+def test_config_mode_is_not_a_phase_selector() -> None:
+    config = _config()
+    validate_config_identity(
+        config,
+        expected_project_sha="sha",
+        actual_project_sha="sha",
+    )
+    config["mode"] = "compare"
+    with pytest.raises(DCUPreflightError, match="mode"):
+        validate_config_identity(
+            config,
+            expected_project_sha="sha",
+            actual_project_sha="sha",
+        )
+
+
+def test_forbidden_backend_gate_includes_mamba_variants() -> None:
+    from scripts import dcu_preflight
+
+    assert {"mamba", "mamba_ssm"}.issubset(dcu_preflight.FORBIDDEN_BACKENDS)
+    with pytest.raises(DCUPreflightError, match="mamba"):
+        dcu_preflight.validate_forbidden_backends(imported_modules={"mamba_ssm"})
+
+
+def test_dcu_runtime_freeze_drift_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    freeze = b"demo-package==1.0\n"
+    freeze_hash = __import__("hashlib").sha256(freeze).hexdigest()
+    lock = tmp_path / "dcu-runtime.txt"
+    lock.write_text(
+        "\n".join(
+            [
+                "python_executable: /fake/dcu-python",
+                "pip_freeze_all_lines: 1",
+                f"pip_freeze_all_sha256: {freeze_hash}",
+                "[packages]",
+                "pip_check:",
+                "No broken requirements found.",
+                "",
+                "[pip_freeze_all]",
+                freeze.decode().rstrip("\n"),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class Completed:
+        returncode = 0
+        stdout = b"other-package==2.0\n"
+        stderr = b""
+
+    monkeypatch.setattr("scripts.dcu_preflight.subprocess.run", lambda *_, **__: Completed())
+    with pytest.raises(DCUPreflightError, match="freeze"):
+        __import__("scripts.dcu_preflight", fromlist=["_verify_live_runtime_lock"])._verify_live_runtime_lock(
+            lock, Path("/fake/dcu-python")
+        )
+
+
+def test_hardware_toolchain_probe_requires_successful_read_only_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_command(args: list[str], **_: object) -> dict[str, object]:
+        calls.append(args)
+        return {"args": args, "returncode": 0, "stdout": "version", "stderr": ""}
+
+    monkeypatch.setattr("scripts.dcu_preflight._run_command", fake_command)
+    from scripts import dcu_preflight
+
+    evidence = dcu_preflight._probe_hardware_toolchain()
+    assert evidence["hy_smi"]["returncode"] == 0
+    assert evidence["hipcc"]["returncode"] == 0
+    assert calls == [["hy-smi"], ["hipcc", "--version"]]
+
+
+def _fake_feature_bundle() -> dict[str, torch.Tensor]:
+    return {
+        "observation.state": torch.tensor([[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]], dtype=torch.float32),
+        "observation.images.image": torch.zeros((1, 3, 360, 360), dtype=torch.float32),
+        "observation.images.image2": torch.ones((1, 3, 360, 360), dtype=torch.float32),
+        "observation.language.tokens": torch.zeros((1, 20), dtype=torch.int64),
+        "observation.language.attention_mask": torch.ones((1, 20), dtype=torch.bool),
+    }
+
+
+def test_reconstructed_same_observation_gate_checks_archived_floating_min_max() -> None:
+    from scripts import dcu_preflight
+
+    features = _fake_feature_bundle()
+    actual = dcu_preflight._feature_metadata(features)
+    reference = {"first_decision": {"observation_policy_processor": actual["tensors"]}}
+    evidence = dcu_preflight._assert_reference_feature_metadata(features, reference)
+    assert evidence["matched"] is True
+    assert "not a historic tensor bitwise hash" in evidence["same_initial_observation"]
+    reference["first_decision"]["observation_policy_processor"]["observation.state"]["max"] = 7.5
+    with pytest.raises(DCUPreflightError, match="feature metadata"):
+        dcu_preflight._assert_reference_feature_metadata(features, reference)
+
+
+def test_gl_identity_gate_uses_the_m0_probe_and_assertion(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import dcu_preflight
+
+    monkeypatch.setattr("scripts.m0_smoke._gl_evidence", lambda: {"vendor": "fake", "renderer": "llvmpipe", "version": "3.1"})
+    monkeypatch.setattr("scripts.m0_smoke._assert_gl_identity", lambda value: {**value, "checked": True})
+    assert dcu_preflight._gl_identity_after_render()["checked"] is True
+
+
+def test_init_state_evidence_requires_one_exact_zero_without_reset() -> None:
+    from scripts import dcu_preflight
+
+    class Env:
+        def __init__(self, value: object) -> None:
+            self.value = value
+            self.reset_count = 0
+
+        def get_attr(self, name: str) -> list[object]:
+            assert name == "init_state_id"
+            return [self.value]
+
+    env = Env(0)
+    evidence = dcu_preflight._init_state_evidence(env)
+    assert evidence["value"] == 0
+    assert env.reset_count == 0
+    with pytest.raises(DCUPreflightError, match="init_state_id"):
+        dcu_preflight._init_state_evidence(Env(1))
+
+
+def test_phase_manifest_records_input_resolved_provenance_and_noise_semantics(tmp_path: Path) -> None:
+    config = _config()
+
+    def fake_compare(**_: object) -> dict[str, object]:
+        return {"status": "PASS", "comparison": {"noise_sha256": "a" * 64}}
+
+    assert run_phase(
+        "compare",
+        config=config,
+        expected_project_sha="sha",
+        actual_project_sha="sha",
+        output_root=tmp_path,
+        config_path=CONFIG_PATH,
+        preflight_gate=lambda **_: {"environment": {"toolchain": {"hy_smi": {"returncode": 0}}}},
+        phase_runner=fake_compare,
+    ) == 0
+    manifest = json.loads(next(tmp_path.iterdir()).joinpath("run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input_config"]["sha256"]
+    assert manifest["resolved_config_artifact"]["sha256"]
+    assert manifest["project"]["actual_sha"] == "sha"
+    assert manifest["runtime_locks"]["dcu"]["sha256"] == config["dcu_runtime_lock_sha256"]
+    assert manifest["artifacts"]["checkpoint"]["revision"] == config["checkpoint"]["revision"]
+    assert manifest["seed"] == 2027
+    assert manifest["action_noise"]["mode"] == "explicit_same_noise"
+    assert manifest["action_noise"]["sha256"] == "a" * 64
+    assert manifest["runtime_hardware_evidence_index"]["preflight"] == "preflight.json"
+
+
+def test_compare_runner_never_steps_environment(tmp_path: Path) -> None:
+    env = _FakeEnv()
+    client = _FakeClient()
+
+    def fake_compare(**_: object) -> dict[str, object]:
+        env.reset(seed=2027)
+        env.render()
+        client.reset(seed=2027)
+        return {"status": "PASS", "env": env, "client": client}
+
+    result = run_phase(
+        "compare",
+        config=_config(),
+        expected_project_sha="sha",
+        actual_project_sha="sha",
+        output_root=tmp_path,
+        preflight_gate=lambda **_: {"gate": "fake-pass"},
+        phase_runner=fake_compare,
+    )
+    assert result == 0
+    assert env.reset_count == 1
+    assert env.render_count == 1
+    assert env.step_count == 0
+    manifest = next(tmp_path.iterdir()) / "run_manifest.json"
+    assert json.loads(manifest.read_text(encoding="utf-8"))["status"] == "PASS"
+
+
+def test_one_step_child_command_maps_physical_device_and_hides_token() -> None:
+    command = build_concurrency_child_command(
+        config_path=CONFIG_PATH,
+        expected_project_sha="sha",
+        physical_device=1,
+        run_directory=Path("/tmp/child"),
+        token=ONE_STEP_CHILD_TOKEN,
+    )
+    assert command[:3] == [sys.executable, str(ROOT / "scripts" / "dcu_preflight.py"), "one-step-child"]
+    assert "--physical-device" in command
+    assert command[command.index("--physical-device") + 1] == "1"
+    assert "--internal-token" in command
+    assert command[command.index("--internal-token") + 1] == ONE_STEP_CHILD_TOKEN
+
+
+def test_internal_one_step_child_never_accepts_a_public_call(tmp_path: Path) -> None:
+    with pytest.raises(DCUPreflightError, match="private internal token"):
+        run_phase(
+            "one-step-child",
+            config=_config(),
+            expected_project_sha="sha",
+            actual_project_sha="sha",
+            output_root=tmp_path,
+        )
+
+
+def test_run_phase_failure_manifest_is_atomic_and_no_overwrite(tmp_path: Path) -> None:
+    def failing_runner(**_: object) -> int:
+        raise RuntimeError("fake phase failed")
+
+    assert run_phase(
+        "compare",
+        config=_config(),
+        expected_project_sha="sha",
+        actual_project_sha="sha",
+        output_root=tmp_path,
+        preflight_gate=lambda **_: {"gate": "fake-pass"},
+        phase_runner=failing_runner,
+    ) == 1
+    run_dir = next(tmp_path.iterdir())
+    failure = run_dir / "failure_manifest.json"
+    assert json.loads(failure.read_text(encoding="utf-8"))["status"] == "FAIL"
+    with pytest.raises(FileExistsError):
+        run_phase(
+            "compare",
+            config=_config(),
+            expected_project_sha="sha",
+            actual_project_sha="sha",
+            output_root=tmp_path,
+            preflight_gate=lambda **_: {"gate": "fake-pass"},
+            phase_runner=failing_runner,
+            run_directory=run_dir,
+        )
+
+
+def test_fake_concurrency_launches_both_children_before_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, int]] = []
+
+    class FakeProcess:
+        def __init__(self, command: list[str]) -> None:
+            self.command = command
+            self.returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            del timeout
+            events.append(("communicate", int(self.command[self.command.index("--physical-device") + 1])))
+            child_dir = Path(self.command[self.command.index("--run-directory") + 1])
+            child_dir.mkdir(parents=True, exist_ok=True)
+            (child_dir / "run_manifest.json").write_text('{"status":"PASS"}\n', encoding="utf-8")
+            (child_dir / "child_result.json").write_text(
+                json.dumps(
+                    {
+                        "status": "PASS",
+                        "reset_count": 1,
+                        "decision_count": 1,
+                        "env_step_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return "child stdout", "child stderr"
+
+        def poll(self) -> int:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+    def fake_popen(command: list[str], **_: object) -> FakeProcess:
+        physical = int(command[command.index("--physical-device") + 1])
+        events.append(("popen", physical))
+        return FakeProcess(command)
+
+    monkeypatch.setattr("scripts.dcu_preflight.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("scripts.dcu_preflight._worker_environment", lambda *_: {})
+    from scripts import dcu_preflight
+
+    result = dcu_preflight._run_concurrency_impl(
+        config=_config(),
+        phase="concurrency",
+        run_directory=tmp_path / "run",
+        expected_project_sha="sha",
+        actual_project_sha="sha",
+        config_path=CONFIG_PATH,
+    )
+    assert result["status"] == "PASS"
+    assert events[:2] == [("popen", 0), ("popen", 1)]
+    assert [event[1] for event in events[2:]] == [0, 1]
+
+
+def test_fake_one_step_child_uses_one_reset_decision_and_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import dcu_preflight
+
+    class FakeEnv:
+        num_envs = 1
+        reset_count = 0
+        step_count = 0
+
+        def call(self, name: str) -> list[object]:
+            if name == "task_description":
+                return ["fake task"]
+            raise KeyError(name)
+
+        def reset(self, *, seed: list[int], options: dict[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+            del options
+            self.reset_count += 1
+            assert seed == [2027]
+            return ({"fake": True}, {} )
+
+        def step(self, action: np.ndarray) -> tuple[dict[str, object], np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
+            self.step_count += 1
+            assert action.shape == (1, 7)
+            return ({"fake": True}, np.zeros(1), np.ones(1, dtype=bool), np.zeros(1, dtype=bool), {"is_success": np.ones(1, dtype=bool)})
+
+    env = FakeEnv()
+    feature_values = {
+        "observation.state": torch.zeros((1, 8), dtype=torch.float32),
+        "observation.images.image": torch.zeros((1, 3, 360, 360), dtype=torch.float32),
+        "observation.images.image2": torch.zeros((1, 3, 360, 360), dtype=torch.float32),
+        "observation.language.tokens": torch.zeros((1, 4), dtype=torch.int64),
+        "observation.language.attention_mask": torch.ones((1, 4), dtype=torch.bool),
+    }
+
+    class FakeClient:
+        reset_count = 0
+        select_count = 0
+        last_queue_evidence = {
+            "queue_length_before": 0,
+            "queue_length_after": 0,
+            "new_chunk_generated": True,
+        }
+
+        def reset(self, *, seed: int) -> dict[str, object]:
+            self.reset_count += 1
+            assert seed == 2027
+            return {"queue_length_before": 0, "queue_length_after": 0}
+
+        def select_action(self, path: Path) -> torch.Tensor:
+            self.select_count += 1
+            assert path.suffix == ".safetensors"
+            return torch.zeros((1, 7), dtype=torch.float32)
+
+        def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    runtime = {
+        "env": env,
+        "envs": {"fake": {0: env}},
+        "task": {
+            "task_name": "fake-task",
+            "task_description": "fake task",
+            "bddl_path": "/pinned/bddl/fake.bddl",
+            "bddl_file": "fake.bddl",
+            "init_state_path": "/pinned/init/fake.xml",
+            "init_state_file": "fake.xml",
+            "init_state_id_evidence": {"value": 0, "expected": 0},
+            "horizon": 280,
+        },
+        "env_preprocessor": lambda value: value,
+        "preprocessor": lambda value: feature_values,
+        "postprocessor": lambda value: value,
+        "env_postprocessor": lambda value: value,
+        "preprocess_observation": lambda value: feature_values,
+        "close_envs": lambda value: None,
+    }
+    monkeypatch.setattr("scripts.dcu_preflight.build_cpu_runtime", lambda *_, **__: runtime)
+    monkeypatch.setattr(
+        "scripts.dcu_preflight._start_worker",
+        lambda *_, **__: {
+            "client": client,
+            "transport": type("Transport", (), {"responses": [], "stderr_text": ""})(),
+            "ping": {},
+            "argv": [],
+            "physical_device": 0,
+            "logical_device": "cuda:0",
+            "runtime": _config()["runtime"],
+        },
+    )
+    def fake_render_callback(trace: object) -> object:
+        def render(_: object) -> None:
+            trace.gl = {"vendor": "fake", "renderer": "llvmpipe", "version": "3.1"}
+
+        return render
+
+    monkeypatch.setattr("scripts.m0_smoke.make_render_callback", fake_render_callback)
+    result = dcu_preflight._run_one_step_child_impl(
+        config=_config(),
+        phase="one-step-child",
+        run_directory=tmp_path / "child",
+        config_path=CONFIG_PATH,
+        physical_device=0,
+    )
+    assert result["child_result"]["reset_count"] == 1
+    assert result["child_result"]["decision_count"] == 1
+    assert result["child_result"]["env_step_count"] == 1
+    assert result["child_result"]["task"]["init_state_path"].endswith("fake.xml")
+    assert result["child_result"]["task"]["init_state_file"] == "fake.xml"
+    assert result["child_result"]["task"]["init_state_id_evidence"]["value"] == 0
+    assert "init_state" not in result["child_result"]["task"]
+    assert env.reset_count == 1
+    assert env.step_count == 1
+    assert client.reset_count == 1
+    assert client.select_count == 1

@@ -1,0 +1,289 @@
+# ShiftVLA LIBERO DCU runtime lock
+#
+# This is a host-specific, read-only runtime proposal produced from the
+# DCU-PREFLIGHT evidence bundle. It records runtime observations and exact
+# dependency bytes; it is not M0 acceptance and must not be treated as one.
+schema_version: 1
+status: PROPOSED_PENDING_DCU_PREFLIGHT
+acceptance: NOT_CLOSED
+generated_at_utc: 2026-08-27T05:40:35.543595+00:00
+evidence_manifest_path: /tmp/shiftvla-dcu-runtime-evidence-20260827/14_evidence_manifest.json
+evidence_manifest_sha256: 23092fe3f042e5408e5772e5ab35f664c3731ad582ba89f5a85169d9b2bc0699
+evidence_probe: DCU-PREFLIGHT read-only runtime evidence probe
+evidence_interpretation: RUNTIME_OBSERVATIONS_PASS_BUT_ACCEPTANCE_NOT_CLOSED
+config_path: /public/home/xuyinghao/workspace/vla/configs/m0/dcu_preflight.yaml
+config_sha256_at_probe: 3056a0d1e7fabe5facd4924c4c7c51def34619671902f29c14a7ca9194266673
+project_head_at_probe: 8dc0525830943b568958b51d4cf02e4434d25a16
+python_executable: /public/home/xuyinghao/tmp/shiftvla-libero-dcu/bin/python
+python_version: 3.11.16
+python_selection_reason: local vendor DCU wheels provide cp310 and cp311 but no cp312 build; cp311 is the exact available torch/torchvision pair
+pip_version: pip 24.2
+pip_freeze_all_lines: 139
+pip_freeze_all_bytes: 3112
+pip_freeze_all_sha256: aa980a6cae3c6e7aea4c80f0f8086184d05903aae1140374f87dd5b6b4b8601a
+pip_freeze_live_evidence_match: EXACT_BYTES
+pip_check_exit_code: 0
+pip_check_output_sha256: 9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09
+runtime_lock_scope: explicit_dcu_runtime_only
+hip_visible_devices: 0,1
+
+[python_compatibility]
+vendor_torch_wheel_inventory: cp310_and_cp311_only
+vendor_torchvision_wheel_inventory: cp310_and_cp311_only
+vendor_cp312_wheel_count: 0
+lerobot_declared_python_requires: >=3.12
+lerobot_python311_overlay: type_syntax_only_compatibility_overlay
+lerobot_overlay_scope: explicit_dcu_runtime_only
+lerobot_overlay_semantics: replaces Python 3.12-only type-parameter syntax with typing-compatible declarations; no scientific or third-party runtime behavior change
+
+[torch_wheels]
+torch_distribution_version: 2.7.1+das.opt1.dtk25042
+torch_runtime_version: 2.7.1
+torch_wheel_path: /public/pip/pytorch/torch-2.7.1+das.opt1.dtk25042-cp311-cp311-manylinux_2_28_x86_64.whl
+torch_wheel_sha256: 59453608593b3b398a97916338a4e0665a078398c8be62ad7ffb22fc0fd01905
+torch_direct_url: file:///public/pip/pytorch/torch-2.7.1%2Bdas.opt1.dtk25042-cp311-cp311-manylinux_2_28_x86_64.whl
+torchvision_distribution_version: 0.22.0+das.opt1.dtk25042
+torchvision_wheel_path: /public/pip/torchvision/torchvision-0.22.0+das.opt1.dtk25042-cp311-cp311-manylinux_2_28_x86_64.whl
+torchvision_wheel_sha256: 97e94d605af31741081cc0c689de7197a8e9ac9f28fa623996405e08e3625bd5
+torchvision_direct_url: file:///public/pip/torchvision/torchvision-0.22.0%2Bdas.opt1.dtk25042-cp311-cp311-manylinux_2_28_x86_64.whl
+
+[lerobot]
+lerobot_version: 0.6.1
+lerobot_source_path: /public/home/xuyinghao/workspace/vla/external/lerobot
+lerobot_pinned_git_sha: 7e241bd630a3719a56157a497ce5d08f244784f1
+lerobot_source_tree_ls_tree_sha256: b63b4d77f34547c73632077d9a68cac55d4991f9fec6a4d1ab644177deedc010
+lerobot_source_origin: https://github.com/huggingface/lerobot.git
+lerobot_source_checkout: detached_clean
+lerobot_patch_path: /public/home/xuyinghao/workspace/vla/runtime/patches/lerobot-v0.6.1-python311.patch
+lerobot_patch_sha256: 3ebaba1e8d305c93d0c758c9c9d3a575215ebe3513e486ae5503da444f8d573d
+lerobot_patch_validation: 17_insertions_13_deletions_5_files
+lerobot_overlay_wheel_path: /public/home/xuyinghao/tmp/shiftvla-lerobot-py311/wheels/lerobot-0.6.1-py3-none-any.whl
+lerobot_overlay_wheel_sha256: d03459fe530b556398bab41ad7de60b47c3354ffa7a5ce44db6249571fcdd2ff
+lerobot_overlay_direct_url: file:///public/home/xuyinghao/tmp/shiftvla-lerobot-py311/wheels/lerobot-0.6.1-py3-none-any.whl
+lerobot_install_record: lerobot @ file:///public/home/xuyinghao/tmp/shiftvla-lerobot-py311/wheels/lerobot-0.6.1-py3-none-any.whl#sha256=d03459fe530b556398bab41ad7de60b47c3354ffa7a5ce44db6249571fcdd2ff
+
+[source_pins]
+hf_libero_git_sha: 8561c60eea2fb93096146f240194649df73d8b1e
+robosuite_git_sha: fbee5844ff5632f5b5698e204ec5357ca50be0df
+mujoco_source_git_sha: 72cb2b210da666617924de709406d6aadbe60c71
+source_checkout_gate: all_pinned_source_trees_verified_detached_clean
+source_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/10_pinned_source_trees.json
+
+[accelerator]
+hip_visible_devices: 0,1
+physical_devices_checked: [0,1]
+host_visible_physical_device_count: 8
+physical_device_names: [K100_AI,K100_AI]
+logical_device_count_under_visibility: 2
+logical_device_names_under_visibility: [K100_AI,K100_AI]
+torch_cuda_api_is_available: true
+torch_version_hip: 6.3.25405
+torch_version_cuda: None
+device_arithmetic_probe: finite_fp32_and_bf16_matmul_add_on_cuda_0_and_cuda_1
+device_arithmetic_scope: tiny arithmetic only; no model forward, simulator, rollout, or scientific acceptance
+hy_smi_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/01_hy_smi.txt
+torch_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/03_python_torch_probe.txt
+
+[toolchain]
+driver_version: 6.3.16-V1.1.0a
+dtk_root: /opt/dtk-25.04.2
+dtk_version_file: DTK-25.04.2
+dtk_rocm_version: 25.04.2
+dtk_dev_version: 25.04.2
+dtk_libs_version: 25.04.1
+dtk_utils_version: 25.04.2
+cuda_compat_version: 12.6.77
+hipconfig_hip_version: 6.3.25422
+hipcc_reported_dcc_version: 25.08.0-0
+clang_version: 17.0.0
+toolchain_alignment_note: torch HIP 6.3.25405 and hipconfig HIP 6.3.25422 are both recorded; DTK libs reports 25.04.1 while root/dev/utils report 25.04.2
+toolchain_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/02_driver_dtk_hipcc.txt
+
+[numpy_abi]
+numpy_version: 2.2.6
+numpy_abi_warning: torch import emitted NumPy 1.x compiled-extension warning under NumPy 2.2.6; _ARRAY_API not found
+numpy_warning_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/03a_torch_import_stderr.txt
+numpy_policy: do not use NumPy conversion or NumPy-backed IPC in the DCU worker until ABI compatibility is resolved
+
+[ipc]
+tensor_only_ipc: REQUIRED
+tensor_payload_format: safetensors
+control_payload_format: one canonical JSON object per line
+allowed_cross_process_payload: safetensors tensor-bundle paths plus JSON-safe execution evidence
+forbidden_cross_process_payload: NumPy arrays, tensor.numpy conversions, PIL/image objects, arbitrary pickle payloads
+ipc_implementation_evidence: scripts/dcu_worker.py and scripts/dcu_model_worker.py
+ipc_constraint_reason: the runtime emits a NumPy 2 ABI warning during torch import; keep the CPU/DCU boundary tensor-only
+
+[forbidden_backends]
+checked_names: [apex,bitsandbytes,deepspeed,flash_attn,flashattention,mamba,mamba_ssm,triton,xformers]
+distribution_matches: []
+module_specs_present_before_torch: []
+module_specs_present_after_torch: []
+sys_modules_present_after_torch: []
+forbidden_backend_result: ABSENT
+forbidden_backend_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/04_forbidden_backends.txt
+
+[occupancy_probe]
+occupancy_snapshot_evidence: /tmp/shiftvla-dcu-runtime-evidence-20260827/01c_hy_smi_processes.txt
+occupancy_snapshot_note: physical device 0 was contended during the probe; timing data is not a clean baseline
+process_identifiers: OMITTED_BY_DESIGN
+occupancy_lock_constraint: NONE
+
+[acceptance]
+m0_acceptance: PENDING
+required_next_gate: fresh DCU preflight using this lock, with model-level and simulator-level checks
+not_run_in_probe: model forward; official preprocessors; simulator reset/render; action generation; rollout; installation; download; checkpoint load
+acceptance_boundary: finite tiny-device arithmetic and package consistency do not establish M0 or scientific acceptance
+
+[evidence]
+manifest_generated_at_utc: 2026-08-27T05:40:35.543595+00:00
+dcu_freeze_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/06a_dcu_pip_freeze_raw.txt
+dcu_freeze_source_sha256: aa980a6cae3c6e7aea4c80f0f8086184d05903aae1140374f87dd5b6b4b8601a
+pip_check_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/05_dcu_pip_check.txt
+forbidden_backend_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/04_forbidden_backends.txt
+patch_overlay_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/11_patch_overlay_verification.txt
+
+[packages]
+pip_check:
+No broken requirements found.
+
+[pip_freeze_all]
+absl-py==2.5.0
+accelerate==1.14.0
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+antlr4-python3-runtime==4.9.3
+anyio==4.14.2
+attrs==26.1.0
+av==15.1.0
+bddl==1.0.1
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.4.2
+cloudpickle==3.1.2
+cmake==4.1.3
+contourpy==1.3.3
+cycler==0.12.1
+datasets==4.8.5
+dill==0.4.1
+docopt==0.6.2
+draccus==0.11.6
+easydict==1.13
+egl_probe==1.0.2
+einops==0.8.2
+etils==1.14.0
+Farama-Notifications==0.0.6
+fastjsonschema==2.22.2
+filelock==3.32.4
+fonttools==4.63.0
+frozenlist==1.8.0
+fsspec==2026.2.0
+future==1.0.0
+gitdb==4.0.12
+GitPython==3.1.59
+glfw==2.10.2
+grpcio==1.83.0
+gymnasium==1.3.0
+h11==0.16.0
+h5py==3.16.0
+hf-xet==1.6.0
+hf_egl_probe==1.0.2
+hf_libero @ file:///public/home/xuyinghao/workspace/vla/external/hf-libero
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.26.0
+hydra-core==1.3.5
+idna==3.19
+ImageIO==2.37.4
+imageio-ffmpeg==0.6.0
+iniconfig==2.3.0
+Jinja2==3.1.6
+jsonlines==4.0.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+jupyter_core==5.9.1
+jupytext==1.19.5
+kiwisolver==1.5.0
+lerobot @ file:///public/home/xuyinghao/tmp/shiftvla-lerobot-py311/wheels/lerobot-0.6.1-py3-none-any.whl#sha256=d03459fe530b556398bab41ad7de60b47c3354ffa7a5ce44db6249571fcdd2ff
+llvmlite==0.48.0
+Markdown==3.10.3
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+matplotlib==3.11.1
+mdit-py-plugins==0.6.1
+mdurl==0.1.2
+mergedeep==1.3.4
+mpmath==1.3.0
+mujoco==3.7.0
+multidict==6.7.1
+multiprocess==0.70.19
+mypy_extensions==1.1.0
+nbformat==5.11.1
+networkx==3.6.1
+num2words==0.5.14
+numba==0.66.0
+numpy==2.2.6
+omegaconf==2.3.1
+opencv-python==4.14.0.94
+opencv-python-headless==4.13.0.92
+packaging==25.0
+pandas==2.3.3
+pillow==12.3.0
+pip @ file:///home/conda/feedstock_root/build_artifacts/pip_1724954388421/work
+platformdirs==4.11.3
+pluggy==1.6.0
+propcache==0.5.2
+protobuf==6.32.0
+psutil==7.2.2
+pyarrow==25.0.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.21.0
+PyOpenGL==3.1.10
+pyparsing==3.3.2
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+pytz==2026.3.post1
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.7.19
+requests==2.34.2
+rich==15.0.0
+robomimic==0.2.0
+robosuite @ file:///public/home/xuyinghao/workspace/vla/external/robosuite
+rpds-py==2026.6.3
+safetensors==0.8.0
+scipy==1.17.1
+sentry-sdk==2.68.0
+setuptools==81.0.0
+shellingham==1.5.4
+six==1.17.0
+smmap==5.0.3
+sympy==1.14.0
+tensorboard==2.21.0
+tensorboard-data-server==0.7.2
+tensorboardX==2.6.5
+termcolor==3.3.0
+thop==0.1.1.post2209072238
+tokenizers==0.22.2
+toml==0.10.2
+torch @ file:///public/pip/pytorch/torch-2.7.1%2Bdas.opt1.dtk25042-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=59453608593b3b398a97916338a4e0665a078398c8be62ad7ffb22fc0fd01905
+torchvision @ file:///public/pip/torchvision/torchvision-0.22.0%2Bdas.opt1.dtk25042-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=97e94d605af31741081cc0c689de7197a8e9ac9f28fa623996405e08e3625bd5
+tqdm==4.70.0
+traitlets==5.16.1
+transformers==5.5.4
+typer==0.27.0
+typing-inspect==0.9.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.3
+urllib3==2.7.0
+wandb==0.27.2
+Werkzeug==3.1.8
+wheel==0.48.0
+xxhash==4.0.1
+yarl==1.24.5
+zipp==4.1.0

@@ -1,2 +1,6 @@
 /external/*
 !/external/pins.yaml
+/runs/dcu_preflight/
+__pycache__/
+*.py[cod]
+.pytest_cache/

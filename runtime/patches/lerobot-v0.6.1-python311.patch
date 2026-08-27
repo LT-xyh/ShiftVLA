@@ -1,0 +1,131 @@
+diff --git a/src/lerobot/datasets/aggregate.py b/src/lerobot/datasets/aggregate.py
+index f08fc66..296c8fc 100644
+--- a/src/lerobot/datasets/aggregate.py
++++ b/src/lerobot/datasets/aggregate.py
+@@ -19,7 +19,7 @@ import copy
+ import logging
+ import shutil
+ from pathlib import Path
+-from typing import Any, NotRequired, TypedDict
++from typing import Any, NotRequired, TypeAlias, TypedDict
+ 
+ import datasets
+ import numpy as np
+@@ -53,8 +53,8 @@ from .video_utils import concatenate_video_files, get_video_duration_in_s
+ 
+ logger = logging.getLogger(__name__)
+ 
+-type FeatureDict = dict[str, dict[str, Any]]
+-type ChunkFile = tuple[int, int]
++FeatureDict: TypeAlias = dict[str, dict[str, Any]]
++ChunkFile: TypeAlias = tuple[int, int]
+ 
+ 
+ class IndexState(TypedDict):
+@@ -73,7 +73,7 @@ class VideoIndex(TypedDict):
+     dst_file_durations: NotRequired[dict[ChunkFile, float]]
+ 
+ 
+-type VideoIndexState = dict[str, VideoIndex]
++VideoIndexState: TypeAlias = dict[str, VideoIndex]
+ 
+ 
+ def merge_video_feature_info_for_aggregate(all_metadata: list[LeRobotDatasetMetadata]) -> FeatureDict:
+diff --git a/src/lerobot/datasets/streaming_dataset.py b/src/lerobot/datasets/streaming_dataset.py
+index d6cc241..387a2aa 100644
+--- a/src/lerobot/datasets/streaming_dataset.py
++++ b/src/lerobot/datasets/streaming_dataset.py
+@@ -16,7 +16,7 @@
+ from collections import deque
+ from collections.abc import Callable, Generator, Iterable, Iterator
+ from pathlib import Path
+-from typing import Literal
++from typing import Generic, Literal, TypeVar
+ 
+ import datasets
+ import numpy as np
+@@ -63,7 +63,10 @@ class _ShardExhaustedError(Exception):
+     """Raised when a streaming dataset shard has no more items."""
+ 
+ 
+-class Backtrackable[T]:
++T = TypeVar("T")
++
++
++class Backtrackable(Generic[T]):
+     """
+     Wrap any iterator/iterable so you can step back up to `history` items
+     and look ahead up to `lookahead` items.
+diff --git a/src/lerobot/motors/motors_bus.py b/src/lerobot/motors/motors_bus.py
+index f4a747b..63fcd5c 100644
+--- a/src/lerobot/motors/motors_bus.py
++++ b/src/lerobot/motors/motors_bus.py
+@@ -30,7 +30,7 @@ from dataclasses import dataclass
+ from enum import Enum
+ from functools import cached_property
+ from pprint import pformat
+-from typing import TYPE_CHECKING, Protocol
++from typing import TYPE_CHECKING, Protocol, TypeAlias
+ 
+ from tqdm import tqdm
+ 
+@@ -49,8 +49,8 @@ else:
+ from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
+ from lerobot.utils.utils import enter_pressed, move_cursor_up
+ 
+-type NameOrID = str | int
+-type Value = int | float
++NameOrID: TypeAlias = str | int
++Value: TypeAlias = int | float
+ 
+ logger = logging.getLogger(__name__)
+ 
+diff --git a/src/lerobot/processor/pipeline.py b/src/lerobot/processor/pipeline.py
+index 54036f9..ea4ea26 100644
+--- a/src/lerobot/processor/pipeline.py
++++ b/src/lerobot/processor/pipeline.py
+@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterable, Sequence
+ from copy import deepcopy
+ from dataclasses import dataclass, field
+ from pathlib import Path
+-from typing import Any, TypedDict, TypeVar, cast
++from typing import Any, Generic, TypedDict, TypeVar, cast
+ 
+ import torch
+ from huggingface_hub import hf_hub_download
+@@ -258,7 +258,7 @@ class ProcessorMigrationError(Exception):
+ 
+ 
+ @dataclass
+-class DataProcessorPipeline[TInput, TOutput](HubMixin):
++class DataProcessorPipeline(HubMixin, Generic[TInput, TOutput]):
+     """A sequential pipeline for processing data, integrated with the Hugging Face Hub.
+ 
+     This class chains together multiple `ProcessorStep` instances to form a complete
+diff --git a/src/lerobot/utils/io_utils.py b/src/lerobot/utils/io_utils.py
+index 3ef793a..19b1c60 100644
+--- a/src/lerobot/utils/io_utils.py
++++ b/src/lerobot/utils/io_utils.py
+@@ -16,11 +16,12 @@
+ import json
+ import logging
+ from pathlib import Path
+-from typing import Any
++from typing import Any, TypeVar
+ 
+ logger = logging.getLogger(__name__)
+ 
+ JsonLike = str | int | float | bool | None | list["JsonLike"] | dict[str, "JsonLike"] | tuple["JsonLike", ...]
++T = TypeVar("T", bound=JsonLike)
+ 
+ 
+ def load_json(fpath: Path) -> Any:
+@@ -90,7 +91,7 @@ def write_video(video_path: str | Path, stacked_frames: list, fps: int) -> None:
+             container.mux(packet)
+ 
+ 
+-def deserialize_json_into_object[T: JsonLike](fpath: Path, obj: T) -> T:
++def deserialize_json_into_object(fpath: Path, obj: T) -> T:
+     """
+     Loads the JSON data from `fpath` and recursively fills `obj` with the
+     corresponding values (strictly matching structure and types).
