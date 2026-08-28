@@ -1,18 +1,16 @@
 # ShiftVLA LIBERO DCU runtime lock
 #
-# This is a host-specific, read-only runtime lock. Its package bytes remain
-# the validated input lock; the closure below records runtime evidence only.
-# It is not M0 acceptance and must not be treated as one.
+# This is a host-specific, read-only runtime proposal produced from the
+# DCU-PREFLIGHT evidence bundle. It records runtime observations and exact
+# dependency bytes; it is not M0 acceptance and must not be treated as one.
 schema_version: 1
-status: VALIDATED_SINGLE_CARD_AND_TWO_INDEPENDENT_WORKERS
-acceptance: CLOSED_FOR_SINGLE_CARD_AND_TWO_INDEPENDENT_WORKERS
+status: PROPOSED_PENDING_DCU_PREFLIGHT
+acceptance: NOT_CLOSED
 generated_at_utc: 2026-08-27T05:40:35.543595+00:00
 evidence_manifest_path: /tmp/shiftvla-dcu-runtime-evidence-20260827/14_evidence_manifest.json
 evidence_manifest_sha256: 23092fe3f042e5408e5772e5ab35f664c3731ad582ba89f5a85169d9b2bc0699
 evidence_probe: DCU-PREFLIGHT read-only runtime evidence probe
-evidence_interpretation: RUNTIME_OBSERVATIONS_PASS_SINGLE_CARD_AND_TWO_INDEPENDENT_WORKERS
-validated_input_lock_sha256: c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a
-validated_input_lock_path: /public/home/xuyinghao/workspace/vla/runtime/locks/archive/shiftvla-libero-dcu-runtime.c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a.txt
+evidence_interpretation: RUNTIME_OBSERVATIONS_PASS_BUT_ACCEPTANCE_NOT_CLOSED
 config_path: /public/home/xuyinghao/workspace/vla/configs/m0/dcu_preflight.yaml
 config_sha256_at_probe: 3056a0d1e7fabe5facd4924c4c7c51def34619671902f29c14a7ca9194266673
 project_head_at_probe: 8dc0525830943b568958b51d4cf02e4434d25a16
@@ -133,8 +131,7 @@ occupancy_lock_constraint: NONE
 
 [acceptance]
 m0_acceptance: PENDING
-runtime_acceptance: CLOSED_FOR_SINGLE_CARD_AND_TWO_INDEPENDENT_WORKERS
-required_next_gate: M0 baseline is separate and was not run by this runtime closure
+required_next_gate: fresh DCU preflight using this lock, with model-level and simulator-level checks
 not_run_in_probe: model forward; official preprocessors; simulator reset/render; action generation; rollout; installation; download; checkpoint load
 acceptance_boundary: finite tiny-device arithmetic and package consistency do not establish M0 or scientific acceptance
 
@@ -145,86 +142,6 @@ dcu_freeze_source_sha256: aa980a6cae3c6e7aea4c80f0f8086184d05903aae1140374f87dd5
 pip_check_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/05_dcu_pip_check.txt
 forbidden_backend_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/04_forbidden_backends.txt
 patch_overlay_source: /tmp/shiftvla-dcu-runtime-evidence-20260827/11_patch_overlay_verification.txt
-
-[concurrency_validation]
-validation_status: PASS
-validation_scope: two independent LIBERO plus SmolVLA workers
-validated_at_utc: 2026-08-28T02:46:14.532790Z
-validation_project_sha: 38517cbcac9f08154fe93bfe9e25a650c464ee45
-validation_config_path: /public/home/xuyinghao/workspace/vla/configs/m0/dcu_preflight.yaml
-validation_config_sha256: 41ce7ddcf0df09569411aeef6900d5a1429845308a516e63b52b528f28d82a4b
-validation_run_directory: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight/20260828T024505Z
-validation_command: env HF_HOME=/tmp/shiftvla-concurrency-hf.8e7mRk MPLCONFIGDIR=/tmp/shiftvla-concurrency-mpl.MyBdJQ XDG_CACHE_HOME=/tmp/shiftvla-concurrency-xdg.Y6l1sK PIP_CACHE_DIR=/tmp/shiftvla-concurrency-pip.Jdcukr HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 HF_HUB_DISABLE_IMPLICIT_TOKEN=1 LIBERO_CONFIG_PATH=/public/home/xuyinghao/tmp/shiftvla-libero-config MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=8 PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 /public/home/xuyinghao/tmp/shiftvla-libero/bin/python scripts/dcu_preflight.py concurrency --config configs/m0/dcu_preflight.yaml --expected-project-sha 38517cbcac9f08154fe93bfe9e25a650c464ee45
-validation_parent_manifest_path: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight/20260828T024505Z/run_manifest.json
-validation_parent_manifest_sha256: 6a59f62c0714a397486d126029d13e3aeb84ecaa450153450baedd7de8d9cf9c
-validation_concurrency_result_path: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight/20260828T024505Z/concurrency.json
-validation_concurrency_result_sha256: a997aefa945e7fca83c8d118d02fd35ca89d71d671353445b110e16fda22c8ae
-validation_child0_manifest_path: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight/20260828T024505Z/children/child0/run_manifest.json
-validation_child0_manifest_sha256: 6bf4bce51dd761261f29c4f9528935b1a7f0e694ebdfbc03f5f628a376c043e9
-validation_child1_manifest_path: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight/20260828T024505Z/children/child1/run_manifest.json
-validation_child1_manifest_sha256: b92e031b76482f3b231e6d56fe5ce7c28610536e03f88e5624d7e2f8c5e66b87
-validation_child0_result_sha256: 80b3e0d9962fbab5fc2a25002095aef66079436b54e1e5ba17799363425ecd65
-validation_child1_result_sha256: add1b7cc3a55600e7dccdc0f7f053304c862810955f35ab520a2aa3e7f1a5632
-worker_a_physical_k100: 0
-worker_a_cpu_hip_visible_devices: UNSET
-worker_a_cpu_cuda_visible_devices: UNSET
-worker_a_nested_hip_visible_devices: 0
-worker_a_nested_cuda_visible_devices: 0
-worker_a_torch_logical_device: cuda:0
-worker_a_torch_device_name: K100_AI
-worker_b_physical_k100: 1
-worker_b_cpu_hip_visible_devices: UNSET
-worker_b_cpu_cuda_visible_devices: UNSET
-worker_b_nested_hip_visible_devices: 1
-worker_b_nested_cuda_visible_devices: 0
-worker_b_torch_logical_device: cuda:0
-worker_b_torch_device_name: K100_AI
-eglQueryDevicesEXT_device_count: 9
-selected_MUJOCO_EGL_DEVICE_ID: 8
-egl_test_device_returncode: 0
-gl_vendor: Mesa/X.org
-gl_renderer: llvmpipe (LLVM 12.0.0, 256 bits)
-gl_version: 3.1 Mesa 21.1.5
-worker_a_model_load_success: true
-worker_b_model_load_success: true
-worker_a_reset_count: 1
-worker_b_reset_count: 1
-worker_a_policy_decisions: 2
-worker_b_policy_decisions: 2
-worker_a_env_steps: 2
-worker_b_env_steps: 2
-worker_a_actions: finite_float32_shape_1x7
-worker_b_actions: finite_float32_shape_1x7
-worker_a_model_load_seconds: 11.400356346741319
-worker_b_model_load_seconds: 12.50961334258318
-worker_a_model_peak_memory_bytes: 2483390464
-worker_b_model_peak_memory_bytes: 2483390464
-worker_a_action_peak_memory_bytes: 1423232512
-worker_b_action_peak_memory_bytes: 1423232512
-worker_a_inference_seconds: [2.3507065307348967, 0.6460360456258059]
-worker_b_inference_seconds: [2.290681406855583, 0.6443344429135323]
-worker_a_env_step_seconds: [0.2640677262097597, 0.2833882551640272]
-worker_b_env_step_seconds: [0.28231940418481827, 0.2700402047485113]
-worker_a_worker_wall_seconds: [2.2660737968981266, 0.6108500845730305]
-worker_b_worker_wall_seconds: [2.224882610142231, 0.6036770921200514]
-concurrent_wall_seconds: 59.51126892492175
-total_env_steps: 4
-total_policy_decisions: 4
-env_steps_per_second: 0.06721416081795066
-policy_decisions_per_second: 0.06721416081795066
-workers_per_second: 0.03360708040897533
-offline_execution: true
-hub_fallback: false
-
-[validation_limits]
-validated_workers: 2
-validated_steps_per_worker: 2
-renderer_policy: exact_llvmpipe_only_no_gpu_egl_optimization
-full_280_step_episode: NOT_RUN
-m0_baseline: NOT_RUN
-scientific_semantics_changed: false
-input_lock_package_bytes_changed: false
-known_numpy_import_warning: torch NumPy 1.x compiled-extension warning under NumPy 2.2.6; no runtime dependency change
 
 [packages]
 pip_check:

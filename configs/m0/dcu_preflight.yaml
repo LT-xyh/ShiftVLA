@@ -101,7 +101,7 @@ output:
 
 runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-runtime.txt
 runtime_lock_sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
-dcu_runtime_lock_sha256: c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a
+dcu_runtime_lock_sha256: cc507d48c64e72a9d2f6552bc5fa638217f9e6a2addef0067ded3d0adce30ed2
 
 concurrency:
   workers: 2

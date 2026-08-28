@@ -7,6 +7,7 @@ dependencies and project-owned validation seams.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import signal
@@ -20,6 +21,7 @@ import yaml
 
 from scripts.dcu_preflight import (
     DCUPreflightError,
+    EXPECTED_DCU_LOCK_SHA256,
     EXPECTED_RENDERER_ENV,
     ONE_STEP_CHILD_TOKEN,
     FeatureOnlyRemotePolicy,
@@ -210,13 +212,86 @@ def test_config_uses_accepted_locks_directory_semantics_and_bounded_timeouts() -
     assert config["mode"] == "explicit_phase"
     assert config["runtime"]["cpu_runtime_lock"].endswith("runtime/locks/shiftvla-libero-runtime.txt")
     assert config["runtime_lock_sha256"] == "921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc"
-    assert config["dcu_runtime_lock_sha256"] == "c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a"
+    assert config["dcu_runtime_lock_sha256"] == "cc507d48c64e72a9d2f6552bc5fa638217f9e6a2addef0067ded3d0adce30ed2"
     assert config["libero_config_path"].endswith("/shiftvla-libero-config")
     assert config["libero_config"]["path"].endswith("/shiftvla-libero-config/config.yaml")
     assert config["runtime"]["worker_startup_timeout_seconds"] == 300
     assert config["runtime"]["worker_forward_timeout_seconds"] == 300
     assert config["runtime"]["worker_shutdown_timeout_seconds"] == 30
     assert config["concurrency"]["steps_per_worker"] == 2
+
+
+def test_dcu_runtime_lock_closure_records_two_worker_evidence() -> None:
+    lock_path = ROOT / "runtime" / "locks" / "shiftvla-libero-dcu-runtime.txt"
+    archive_path = (
+        ROOT
+        / "runtime"
+        / "locks"
+        / "archive"
+        / "shiftvla-libero-dcu-runtime.c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a.txt"
+    )
+    lock_text = lock_path.read_text(encoding="utf-8")
+    prefix, _ = lock_text.split("[pip_freeze_all]\n", 1)
+    config = _config()
+    current_lock_sha256 = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    assert archive_path.is_file()
+    assert hashlib.sha256(archive_path.read_bytes()).hexdigest() == (
+        "c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a"
+    )
+    assert f"validated_input_lock_path: {archive_path}\n" in prefix
+    assert current_lock_sha256 == config["dcu_runtime_lock_sha256"]
+    assert current_lock_sha256 == EXPECTED_DCU_LOCK_SHA256
+    assert "status: VALIDATED_SINGLE_CARD_AND_TWO_INDEPENDENT_WORKERS\n" in prefix
+    assert "acceptance: CLOSED_FOR_SINGLE_CARD_AND_TWO_INDEPENDENT_WORKERS\n" in prefix
+    assert "validated_input_lock_sha256: c7b912e71c2320ed5312b9844d2284c697b0a38ae34759702b57c062ff04956a\n" in prefix
+    assert "validation_run_directory: /public/home/xuyinghao/workspace/vla/runs/dcu_preflight/20260828T024505Z\n" in prefix
+    assert "validation_parent_manifest_sha256: 6a59f62c0714a397486d126029d13e3aeb84ecaa450153450baedd7de8d9cf9c\n" in prefix
+    assert "validated_workers: 2\n" in prefix
+    assert "validated_steps_per_worker: 2\n" in prefix
+    assert "m0_baseline: NOT_RUN\n" in prefix
+    for evidence_line in (
+        "validation_status: PASS\n",
+        "validation_project_sha: 38517cbcac9f08154fe93bfe9e25a650c464ee45\n",
+        "validation_parent_manifest_sha256: 6a59f62c0714a397486d126029d13e3aeb84ecaa450153450baedd7de8d9cf9c\n",
+        "validation_concurrency_result_sha256: a997aefa945e7fca83c8d118d02fd35ca89d71d671353445b110e16fda22c8ae\n",
+        "validation_child0_manifest_sha256: 6bf4bce51dd761261f29c4f9528935b1a7f0e694ebdfbc03f5f628a376c043e9\n",
+        "validation_child1_manifest_sha256: b92e031b76482f3b231e6d56fe5ce7c28610536e03f88e5624d7e2f8c5e66b87\n",
+        "validation_child0_result_sha256: 80b3e0d9962fbab5fc2a25002095aef66079436b54e1e5ba17799363425ecd65\n",
+        "validation_child1_result_sha256: add1b7cc3a55600e7dccdc0f7f053304c862810955f35ab520a2aa3e7f1a5632\n",
+        "worker_a_physical_k100: 0\n",
+        "worker_b_physical_k100: 1\n",
+        "worker_a_cpu_hip_visible_devices: UNSET\n",
+        "worker_a_cpu_cuda_visible_devices: UNSET\n",
+        "worker_b_cpu_hip_visible_devices: UNSET\n",
+        "worker_b_cpu_cuda_visible_devices: UNSET\n",
+        "worker_a_nested_hip_visible_devices: 0\n",
+        "worker_b_nested_hip_visible_devices: 1\n",
+        "worker_a_nested_cuda_visible_devices: 0\n",
+        "worker_b_nested_cuda_visible_devices: 0\n",
+        "worker_a_torch_logical_device: cuda:0\n",
+        "worker_b_torch_logical_device: cuda:0\n",
+        "eglQueryDevicesEXT_device_count: 9\n",
+        "selected_MUJOCO_EGL_DEVICE_ID: 8\n",
+        "egl_test_device_returncode: 0\n",
+        "gl_vendor: Mesa/X.org\n",
+        "gl_renderer: llvmpipe (LLVM 12.0.0, 256 bits)\n",
+        "gl_version: 3.1 Mesa 21.1.5\n",
+        "worker_a_model_load_success: true\n",
+        "worker_b_model_load_success: true\n",
+        "worker_a_reset_count: 1\n",
+        "worker_b_reset_count: 1\n",
+        "worker_a_policy_decisions: 2\n",
+        "worker_b_policy_decisions: 2\n",
+        "worker_a_env_steps: 2\n",
+        "worker_b_env_steps: 2\n",
+        "worker_a_actions: finite_float32_shape_1x7\n",
+        "worker_b_actions: finite_float32_shape_1x7\n",
+        "offline_execution: true\n",
+        "hub_fallback: false\n",
+        "full_280_step_episode: NOT_RUN\n",
+        "m0_baseline: NOT_RUN\n",
+    ):
+        assert evidence_line in prefix
 
 
 def test_concurrency_step_boundary_is_fail_closed() -> None:
