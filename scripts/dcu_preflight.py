@@ -21,9 +21,11 @@ from pathlib import Path
 import re
 import random
 import shlex
+import signal
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import threading
 import time
 import traceback
@@ -66,9 +68,17 @@ EXPECTED_CHUNK_SIZE = 50
 EXPECTED_N_ACTION_STEPS = 1
 EXPECTED_HORIZON = 280
 EXPECTED_PHYSICAL_DEVICES = (0, 1)
+EXPECTED_CONCURRENCY_STEPS_PER_WORKER = 2
 EXPECTED_COMPARE_PHYSICAL_DEVICE = 1
 EXPECTED_CLOSED_LOOP_PHYSICAL_DEVICE = 1
 EXPECTED_LOGICAL_DEVICE = "cuda:0"
+
+EXPECTED_EGL_DEVICE_ID = "8"
+EXPECTED_GL_IDENTITY = {
+    "vendor": "Mesa/X.org",
+    "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+    "version": "3.1 Mesa 21.1.5",
+}
 
 EXPECTED_CHECKPOINT_REPO = "HuggingFaceVLA/smolvla_libero"
 EXPECTED_CHECKPOINT_REVISION = "6721902bc4d61e50a3bfdb11dfb4cb626f05d102"
@@ -108,7 +118,7 @@ EXPECTED_REFERENCE_DECISIONS_RELATIVE_PATH = Path(
     "runs/m0_smoke/20260825T075758Z_2_f664c2fe/decisions.jsonl"
 )
 EXPECTED_ALLOWED_DIRTY_PATHS = ("AGENTS.md",)
-EXPECTED_AGENTS_SHA256 = "edb351e926097b9b6a39b3d6900c48797e7d666bd132e2ad48b6ab711920314b"
+EXPECTED_AGENTS_SHA256 = "956a88bf24253c7120be85ec5b446771e60ff9cac95b7932e7a10d5e3c5fc5d8"
 EXPECTED_OFFLINE_ENV = {
     "HF_HUB_OFFLINE": "1",
     "TRANSFORMERS_OFFLINE": "1",
@@ -697,6 +707,27 @@ def build_worker_environment(
     """Copy an environment and pin one physical device to logical ``cuda:0``."""
 
     mapping = map_physical_to_logical(physical_index)
+    result = _copy_environment(base_environment)
+    expected_hip = mapping["hip_visible_devices"]
+    for key, expected in (
+        ("HIP_VISIBLE_DEVICES", expected_hip),
+        ("CUDA_VISIBLE_DEVICES", "0"),
+    ):
+        if key in result and result[key] != expected:
+            raise DCUPreflightError(f"worker environment {key} conflicts with physical device mapping")
+        result[key] = expected
+    return result
+
+
+def _copy_environment(base_environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Copy a subprocess environment after applying the same strict checks.
+
+    Environment construction is deliberately kept separate from device
+    visibility.  A CPU LIBERO child needs the validated renderer/offline
+    variables, while the nested model worker receives the compute mapping
+    from :func:`build_worker_environment` at its own process boundary.
+    """
+
     if base_environment is None:
         base_environment = {}
     if not isinstance(base_environment, Mapping):
@@ -712,14 +743,6 @@ def build_worker_environment(
         if "\n" in key or "\n" in value:
             raise DCUPreflightError("worker environment contains an invalid NUL/newline")
         result[key] = value
-    expected_hip = mapping["hip_visible_devices"]
-    for key, expected in (
-        ("HIP_VISIBLE_DEVICES", expected_hip),
-        ("CUDA_VISIBLE_DEVICES", "0"),
-    ):
-        if key in result and result[key] != expected:
-            raise DCUPreflightError(f"worker environment {key} conflicts with physical device mapping")
-        result[key] = expected
     return result
 
 
@@ -1152,6 +1175,33 @@ def _json_dump(path: str | Path, value: Any, *, exclusive: bool = False) -> Path
     return target
 
 
+def _atomic_json_dump(path: str | Path, value: Any) -> Path:
+    """Replace one JSON artifact atomically, including stale child manifests."""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(
+        _json_safe(value), ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False
+    ) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    return target
+
+
 def _jsonl_dump(path: str | Path, rows: Sequence[Mapping[str, Any]], *, exclusive: bool = False) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1372,6 +1422,11 @@ def validate_runner_config(
         raise DCUPreflightError("concurrency.physical_devices must be exactly [0, 1]")
     if concurrency.get("logical_device") != EXPECTED_LOGICAL_DEVICE:
         raise DCUPreflightError("concurrency.logical_device must be cuda:0 per child")
+    _require_exact(
+        concurrency.get("steps_per_worker"),
+        EXPECTED_CONCURRENCY_STEPS_PER_WORKER,
+        "concurrency.steps_per_worker",
+    )
     if config.get("mode") != "explicit_phase":
         raise DCUPreflightError("config mode must be the phase-neutral value 'explicit_phase'")
     identity.update(
@@ -1970,6 +2025,102 @@ def _gl_identity_after_render() -> dict[str, Any]:
     return m0_smoke._assert_gl_identity(identity)
 
 
+def _assert_exact_llvmpipe(identity: Any) -> dict[str, Any]:
+    """Require the renderer identity already validated for the frozen M0 run."""
+
+    if not isinstance(identity, Mapping):
+        raise DCUPreflightError(f"GL identity unavailable: {identity!r}")
+    mismatches = {
+        key: {"expected": expected, "actual": identity.get(key)}
+        for key, expected in EXPECTED_GL_IDENTITY.items()
+        if identity.get(key) != expected
+    }
+    if mismatches:
+        raise DCUPreflightError(f"GL identity is not the validated exact llvmpipe renderer: {mismatches}")
+    return {**dict(identity), "exact_validated": True}
+
+
+def _egl_probe_evidence(*, selected_device: str = EXPECTED_EGL_DEVICE_ID) -> dict[str, Any]:
+    """Enumerate EGL devices independently of CUDA/HIP visibility.
+
+    The package's C++ probes are intentionally used instead of a CUDA-derived
+    ordinal.  ``query_devices`` emits one strict integer count and
+    ``test_device`` validates the selected ordinal in that same EGL namespace.
+    """
+
+    selected = _require_string(selected_device, "MUJOCO_EGL_DEVICE_ID")
+    if not selected.isdigit():
+        raise DCUPreflightError("MUJOCO_EGL_DEVICE_ID must be a decimal EGL ordinal")
+    selected_index = int(selected)
+    try:
+        import egl_probe
+
+        package_file = Path(str(egl_probe.__file__)).resolve()
+    except Exception as exc:
+        raise DCUPreflightError(f"could not import pinned egl_probe: {exc}") from exc
+    build = package_file.parent / "build"
+    query = build / "query_devices"
+    test = build / "test_device"
+    for binary, name in ((query, "eglQueryDevicesEXT query_devices"), (test, "egl test_device")):
+        if not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
+            raise DCUPreflightError(f"{name} binary is unavailable: {binary}")
+    queried = subprocess.run(
+        [str(query)],
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    query_stdout = _decode_command_bytes(getattr(queried, "stdout", b""), "egl query stdout")
+    query_stderr = _decode_command_bytes(getattr(queried, "stderr", b""), "egl query stderr")
+    if int(getattr(queried, "returncode", -1)) != 0:
+        raise DCUPreflightError(
+            f"eglQueryDevicesEXT query_devices failed: returncode={getattr(queried, 'returncode', None)}, "
+            f"stdout={query_stdout!r}, stderr={query_stderr!r}"
+        )
+    count_match = re.fullmatch(r"\s*(\d+)\s*", query_stdout)
+    if count_match is None:
+        raise DCUPreflightError(f"eglQueryDevicesEXT count is not a strict integer: {query_stdout!r}")
+    count = int(count_match.group(1))
+    if selected_index >= count:
+        raise DCUPreflightError(
+            f"selected EGL device {selected_index} is outside eglQueryDevicesEXT count {count}"
+        )
+    tested = subprocess.run(
+        [str(test), selected],
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    test_stdout = _decode_command_bytes(getattr(tested, "stdout", b""), "egl test stdout")
+    test_stderr = _decode_command_bytes(getattr(tested, "stderr", b""), "egl test stderr")
+    if int(getattr(tested, "returncode", -1)) != 0:
+        raise DCUPreflightError(
+            f"EGL device {selected_index} validation failed: returncode={getattr(tested, 'returncode', None)}, "
+            f"stdout={test_stdout!r}, stderr={test_stderr!r}"
+        )
+    return {
+        "probe_package": str(package_file),
+        "query_devices": {
+            "path": str(query),
+            "returncode": int(queried.returncode),
+            "stdout": query_stdout,
+            "stderr": query_stderr,
+        },
+        "eglQueryDevicesEXT_device_count": count,
+        "egl_device_count": count,
+        "selected_MUJOCO_EGL_DEVICE_ID": selected,
+        "selected_egl_device_id": selected,
+        "test_device": {
+            "path": str(test),
+            "ordinal": selected_index,
+            "returncode": int(tested.returncode),
+            "stdout": test_stdout,
+            "stderr": test_stderr,
+        },
+        "namespace": "EGL independent of CUDA_VISIBLE_DEVICES",
+    }
+
+
 def _task_source_evidence(libero: Any, task: Mapping[str, Any], root: Path) -> dict[str, Any]:
     """Resolve and validate the same pinned task/BDDL/init seams as M0."""
 
@@ -2294,8 +2445,46 @@ def _worker_environment(config: Mapping[str, Any], physical_device: int) -> dict
     libero_config = _require_mapping(config["libero_config"], "libero_config")
     environment["LIBERO_CONFIG_PATH"] = str(Path(str(libero_config["path"])).resolve().parent)
     environment["PYTHONUNBUFFERED"] = "1"
+    # Ignore any parent visibility: this boundary is the source of truth for
+    # the nested worker's physical-to-logical mapping.
+    environment.pop("HIP_VISIBLE_DEVICES", None)
+    environment.pop("CUDA_VISIBLE_DEVICES", None)
     del runtime
     return build_worker_environment(physical_device, environment)
+
+
+def build_cpu_child_environment(
+    config: Mapping[str, Any],
+    base_environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the CPU LIBERO child's environment without compute visibility.
+
+    CUDA/HIP visibility belongs to the nested model-worker process, not to the
+    CPU process which imports robosuite and creates the EGL context.  In
+    particular, robosuite's EGL assertion treats a non-empty
+    ``CUDA_VISIBLE_DEVICES`` as an EGL ordinal list; keeping that variable out
+    of this boundary preserves the validated independent ordinal 8 renderer.
+    """
+
+    _require_mapping(config, "config")
+    environment = _copy_environment(os.environ.copy() if base_environment is None else base_environment)
+    offline = _require_mapping(config["offline"], "offline")
+    renderer = _require_mapping(config["renderer"], "renderer")
+    libero_config = _require_mapping(config["libero_config"], "libero_config")
+    environment.update({str(k): str(v) for k, v in offline.items()})
+    environment.update({str(k): str(v) for k, v in renderer.items()})
+    environment["LIBERO_CONFIG_PATH"] = str(Path(str(libero_config["path"])).resolve().parent)
+    environment["PYTHONUNBUFFERED"] = "1"
+    # These are intentionally absent, rather than set to an arbitrary
+    # logical/physical index.  The nested worker gets its own mapping.
+    environment.pop("HIP_VISIBLE_DEVICES", None)
+    environment.pop("CUDA_VISIBLE_DEVICES", None)
+    if environment.get("MUJOCO_EGL_DEVICE_ID") != EXPECTED_EGL_DEVICE_ID:
+        raise DCUPreflightError(
+            "CPU child renderer must select the validated independent EGL ordinal "
+            f"{EXPECTED_EGL_DEVICE_ID!r}"
+        )
+    return environment
 
 
 def _start_worker(
@@ -2327,9 +2516,10 @@ def _start_worker(
     ]
     from scripts.dcu_worker import DCUWorkerClient, SubprocessWorkerTransport
 
+    worker_environment = _worker_environment(config, normalized_device)
     transport = SubprocessWorkerTransport(
         argv,
-        env=_worker_environment(config, normalized_device),
+        env=worker_environment,
         cwd=_ROOT,
         shutdown_timeout=_timeout_seconds(runtime, "shutdown"),
     )
@@ -2358,6 +2548,12 @@ def _start_worker(
         "argv": argv,
         "physical_device": normalized_device,
         "logical_device": EXPECTED_LOGICAL_DEVICE,
+        "compute_environment": {
+            "physical_k100": normalized_device,
+            "HIP_VISIBLE_DEVICES": worker_environment.get("HIP_VISIBLE_DEVICES"),
+            "CUDA_VISIBLE_DEVICES": worker_environment.get("CUDA_VISIBLE_DEVICES"),
+            "torch_logical_device": EXPECTED_LOGICAL_DEVICE,
+        },
         "ipc": ipc,
         "runtime": runtime,
     }
@@ -2436,17 +2632,34 @@ def _worker_summary(worker: Mapping[str, Any] | None) -> dict[str, Any]:
     responses = getattr(transport, "responses", [])
     ping = worker.get("ping", {})
     ping_mapping = ping if isinstance(ping, Mapping) else {}
+    physical = worker.get("physical_device")
+    compute_environment = worker.get("compute_environment")
+    if not isinstance(compute_environment, Mapping):
+        compute_environment = {
+            "physical_k100": physical,
+            "HIP_VISIBLE_DEVICES": str(physical) if _is_int(physical) else None,
+            "CUDA_VISIBLE_DEVICES": "0",
+            "torch_logical_device": worker.get("logical_device", EXPECTED_LOGICAL_DEVICE),
+        }
+    torch_device = ping_mapping.get("device", worker.get("logical_device"))
+    torch_device_name = ping_mapping.get("device_name")
+    model = ping_mapping.get("model")
     return {
         "argv": list(worker.get("argv", [])),
-        "physical_device": worker.get("physical_device"),
+        "physical_device": physical,
         "logical_device": worker.get("logical_device"),
+        "compute_environment": _summary_value(compute_environment),
+        "torch_logical_device": torch_device,
+        "torch_device_name": torch_device_name,
+        "model_load_success": bool(ping_mapping.get("ok") is True and isinstance(model, Mapping)),
+        "model": _summary_value(model),
         "startup_ping": _summary_value(ping_mapping),
         "torch_runtime": {
             "hip_version": ping_mapping.get("torch_hip_version"),
             "cuda_version": ping_mapping.get("torch_cuda_version"),
             "cuda_available": ping_mapping.get("torch_cuda_available"),
-            "device": ping_mapping.get("device"),
-            "device_name": ping_mapping.get("device_name"),
+            "device": torch_device,
+            "device_name": torch_device_name,
             "source": "dcu_worker_ping",
         },
         "responses": _summary_value(list(responses)),
@@ -2842,12 +3055,33 @@ def _run_one_step_child_impl(
     physical_device: int | None = None,
     **_: Any,
 ) -> dict[str, Any]:
-    """Execute one concurrency child boundary: reset, select once, step once."""
+    """Execute the fixed two-decision/two-step concurrency child boundary."""
 
     from scripts import m0_smoke
     from scripts.dcu_model_worker import FEATURE_SCHEMA
     from scripts.dcu_worker import save_tensor_bundle
 
+    concurrency = _require_mapping(config["concurrency"], "concurrency")
+    steps = _require_exact(
+        concurrency.get("steps_per_worker"),
+        EXPECTED_CONCURRENCY_STEPS_PER_WORKER,
+        "concurrency.steps_per_worker",
+    )
+    if int(steps) != EXPECTED_CONCURRENCY_STEPS_PER_WORKER:
+        raise DCUPreflightError("concurrency child step boundary is not the frozen two-step contract")
+    # Validate the actual process boundary as well as the environment builder.
+    # A direct/private child invocation with compute visibility is rejected so
+    # robosuite can never interpret a CUDA ordinal as an EGL ordinal list.
+    cpu_compute_visibility = {
+        key: os.environ.get(key)
+        for key in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    }
+    if any(value is not None for value in cpu_compute_visibility.values()):
+        raise DCUPreflightError(
+            "CPU concurrency child must not receive HIP/CUDA compute visibility: "
+            f"{cpu_compute_visibility}"
+        )
+    cpu_environment = build_cpu_child_environment(config, base_environment=os.environ.copy())
     runtime = build_cpu_runtime(config, include_policy=False, phase="concurrency")
     env = runtime["env"]
     trace = m0_smoke.TraceStore(
@@ -2882,6 +3116,20 @@ def _run_one_step_child_impl(
             config_path=config_path,
             physical_device=selected_physical,
         )
+        worker_evidence = _worker_summary(worker)
+        compute_environment = _require_mapping(
+            worker_evidence.get("compute_environment"), "worker.compute_environment"
+        )
+        if compute_environment.get("physical_k100") != selected_physical:
+            raise DCUPreflightError("nested worker physical K100 evidence does not match child assignment")
+        if compute_environment.get("HIP_VISIBLE_DEVICES") != str(selected_physical):
+            raise DCUPreflightError("nested worker HIP_VISIBLE_DEVICES does not match physical K100")
+        if compute_environment.get("CUDA_VISIBLE_DEVICES") != "0":
+            raise DCUPreflightError("nested worker CUDA_VISIBLE_DEVICES must expose logical cuda:0")
+        if worker_evidence.get("torch_logical_device") != EXPECTED_LOGICAL_DEVICE:
+            raise DCUPreflightError("nested worker torch logical device is not cuda:0")
+        if worker_evidence.get("model_load_success") is not True:
+            raise DCUPreflightError("nested SmolVLA model load evidence is not successful")
         remote = FeatureOnlyRemotePolicy(worker["client"], request_writer=request_writer, trace=trace)
         remote.reset_timeout_seconds = _timeout_seconds(worker["runtime"], "startup")
         remote.forward_timeout_seconds = _timeout_seconds(worker["runtime"], "forward")
@@ -2896,22 +3144,94 @@ def _run_one_step_child_impl(
         policy.reset()
         observation, reset_info = _reset_vector_env(env, EXPECTED_SEED)
         m0_smoke.make_render_callback(trace)(wrapped_env)
-        gl = m0_smoke._assert_gl_identity(trace.gl)
-        processed = runtime["preprocess_observation"](observation)
-        processed = _add_task_to_observation(processed, env)
-        processed = env_preprocessor(processed)
-        features = preprocessor(processed)
-        action = policy.select_action(_feature_bundle(features))
-        action = postprocessor(action)
-        transition = env_postprocessor({"action": action})
-        if not isinstance(transition, Mapping) or "action" not in transition:
-            raise DCUPreflightError("official env postprocessor returned no action")
-        action_tensor = _valid_action(transition["action"], "one-step action")
-        action_numpy = action_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
-        wrapped_env.step(action_numpy)
-        if len(trace.decisions) != 1 or len(trace.env_step_latencies) != 1:
-            raise DCUPreflightError("one-step child did not record exactly one decision and env.step")
-        trace.decisions[0]["gl"] = gl
+        gl = _assert_exact_llvmpipe(m0_smoke._assert_gl_identity(trace.gl))
+        egl = _egl_probe_evidence(
+            selected_device=str(cpu_environment["MUJOCO_EGL_DEVICE_ID"])
+        )
+        action_evidence: list[dict[str, Any]] = []
+        for step_index in range(int(steps)):
+            # Keep the official processor order for every independent policy
+            # decision: observation -> env processor -> policy processor ->
+            # frozen remote policy -> postprocessors -> environment step.
+            processed = runtime["preprocess_observation"](observation)
+            processed = _add_task_to_observation(processed, env)
+            processed = env_preprocessor(processed)
+            features = preprocessor(processed)
+            action = policy.select_action(_feature_bundle(features))
+            action = postprocessor(action)
+            transition = env_postprocessor({"action": action})
+            if not isinstance(transition, Mapping) or "action" not in transition:
+                raise DCUPreflightError("official env postprocessor returned no action")
+            action_tensor = _valid_action(transition["action"], f"two-step action {step_index}")
+            action_numpy = action_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+            if action_numpy.shape != (1, EXPECTED_ACTION_DIM) or not np.isfinite(action_numpy).all():
+                raise DCUPreflightError("concurrency action must be finite float32 with shape (1, 7)")
+            step_result = wrapped_env.step(action_numpy)
+            if not isinstance(step_result, tuple) or len(step_result) != 5:
+                raise DCUPreflightError("vector environment step must return five values")
+            terminated = np.asarray(step_result[2], dtype=bool).reshape(-1)
+            truncated = np.asarray(step_result[3], dtype=bool).reshape(-1)
+            if terminated.size != EXPECTED_N_ENVS or truncated.size != EXPECTED_N_ENVS:
+                raise DCUPreflightError("concurrency child step done flags must have one environment")
+            done = bool(np.logical_or(terminated, truncated).any())
+            if done and step_index < int(steps) - 1:
+                raise DCUPreflightError(
+                    "concurrency child episode terminated before completing the fixed two steps"
+                )
+            if not trace.decisions:
+                raise DCUPreflightError("policy decision was not recorded")
+            trace.decisions[-1]["gl"] = gl
+            trace.decisions[-1]["step_index"] = step_index
+            trace.decisions[-1]["action_contract"] = {
+                "shape": list(action_numpy.shape),
+                "dtype": str(action_numpy.dtype),
+                "finite": bool(np.isfinite(action_numpy).all()),
+            }
+            action_evidence.append(trace.decisions[-1]["action_contract"] | {"decision_index": step_index})
+            observation = step_result[0]
+        if len(trace.decisions) != int(steps) or len(trace.env_step_latencies) != int(steps):
+            raise DCUPreflightError(
+                "concurrency child did not record exactly two decisions and two env.step calls"
+            )
+        if trace.render_count < 1:
+            raise DCUPreflightError("concurrency child did not render after reset")
+        worker_response = _response_for(worker, "select_action")
+        peak_memory = worker_response.get("peak_memory_bytes")
+        if peak_memory is not None and (
+            isinstance(peak_memory, bool) or not isinstance(peak_memory, int) or peak_memory < 0
+        ):
+            raise DCUPreflightError("worker peak_memory_bytes must be a non-negative integer")
+        latency = {
+            "inference_seconds": _summary_value(trace.inference_latencies),
+            "env_step_seconds": _summary_value(trace.env_step_latencies),
+            "render_seconds": _summary_value(trace.render_latencies),
+            "worker_wall_seconds": _summary_value(
+                [item.get("worker_wall_latency_seconds") for item in trace.decisions]
+            ),
+        }
+        memory = {
+            "dcu_peak_memory_bytes": peak_memory,
+            "worker_response": _summary_value(worker_response),
+        }
+        cpu_environment_evidence = {
+            "physical_k100": selected_physical,
+            "HIP_VISIBLE_DEVICES": cpu_compute_visibility["HIP_VISIBLE_DEVICES"],
+            "CUDA_VISIBLE_DEVICES": cpu_compute_visibility["CUDA_VISIBLE_DEVICES"],
+            "MUJOCO_EGL_DEVICE_ID": cpu_environment["MUJOCO_EGL_DEVICE_ID"],
+            "MUJOCO_GL": cpu_environment.get("MUJOCO_GL"),
+            "PYOPENGL_PLATFORM": cpu_environment.get("PYOPENGL_PLATFORM"),
+            "offline": {
+                key: cpu_environment.get(key) for key in EXPECTED_OFFLINE_ENV
+            },
+        }
+        device_evidence = {
+            "physical_k100": selected_physical,
+            "cpu_child_cuda_visible_devices": cpu_compute_visibility["CUDA_VISIBLE_DEVICES"],
+            "nested_worker_hip_visible_devices": compute_environment["HIP_VISIBLE_DEVICES"],
+            "nested_worker_cuda_visible_devices": compute_environment["CUDA_VISIBLE_DEVICES"],
+            "torch_logical_device": worker_evidence["torch_logical_device"],
+            "torch_device_name": worker_evidence.get("torch_device_name"),
+        }
         return {
             "status": "PASS",
             "child_result": {
@@ -2920,13 +3240,23 @@ def _run_one_step_child_impl(
                 "logical_device": EXPECTED_LOGICAL_DEVICE,
                 "seed": EXPECTED_SEED,
                 "reset_count": 1,
-                "decision_count": 1,
-                "env_step_count": 1,
+                "decision_count": int(steps),
+                "env_step_count": int(steps),
                 "reset_info": _summary_value(reset_info),
                 "gl": gl,
+                "egl": egl,
+                "environment": {"cpu_child": cpu_environment_evidence},
+                "device": device_evidence,
+                "model_load_success": True,
+                "model": worker_evidence.get("model"),
+                "action_evidence": action_evidence,
+                "latency": latency,
+                "memory": memory,
+                "network": {"offline": True, "hub_fallback": False},
+                "render_count": trace.render_count,
                 "task": runtime.get("task"),
-                "decision": trace.decisions[0],
-                "worker": _worker_summary(worker),
+                "decisions": trace.decisions,
+                "worker": worker_evidence,
             },
             "decisions": trace.decisions,
         }
@@ -2973,6 +3303,334 @@ def build_concurrency_child_command(
     ]
 
 
+def _terminalize_concurrency_manifest(
+    child_directory: str | Path,
+    *,
+    status: str,
+    returncode: int | None,
+    reason: str,
+) -> Path:
+    """Make a child run manifest terminal even when its process was killed."""
+
+    if status not in {"PASS", "FAIL", "TERMINATED"}:
+        raise DCUPreflightError(f"invalid concurrency child terminal status: {status}")
+    directory = Path(child_directory).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "run_manifest.json"
+    current: dict[str, Any] = {}
+    if target.is_file():
+        try:
+            parsed = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(parsed, Mapping):
+                current = dict(parsed)
+        except (OSError, json.JSONDecodeError):
+            # A partial/invalid RUNNING file is replaced with an explicit
+            # terminal record; the parent owns this recovery boundary.
+            current = {}
+    current.update(
+        {
+            "status": status,
+            "terminal": True,
+            "returncode": returncode,
+            "termination_reason": str(reason),
+            "finished_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    return _atomic_json_dump(target, current)
+
+
+def _close_concurrency_process_pipes(process: Any) -> None:
+    """Close pipes after bounded collection can no longer reap their streams."""
+
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(process, name, None)
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _decode_process_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _cleanup_started_concurrency_process(process: Any) -> None:
+    """Reap a just-started child whose PID metadata was invalid."""
+
+    if getattr(process, "poll", lambda: None)() is not None:
+        return
+    terminate = getattr(process, "terminate", None)
+    if callable(terminate):
+        try:
+            terminate()
+        except Exception:
+            pass
+    wait = getattr(process, "wait", None)
+    if not callable(wait):
+        kill = getattr(process, "kill", None)
+        if callable(kill):
+            try:
+                kill()
+            except Exception:
+                pass
+        _close_concurrency_process_pipes(process)
+        return
+    try:
+        wait(timeout=1.0)
+    except Exception:
+        kill = getattr(process, "kill", None)
+        if callable(kill):
+            try:
+                kill()
+            except Exception:
+                pass
+        try:
+            wait(timeout=1.0)
+        except Exception:
+            pass
+    _close_concurrency_process_pipes(process)
+
+
+def _kill_concurrency_process(metadata: dict[str, Any], *, reason: str) -> None:
+    """Terminate only the process group created for one concurrency child."""
+
+    process = metadata["process"]
+    pgid = metadata.get("pgid")
+    if isinstance(pgid, bool) or not isinstance(pgid, int) or pgid <= 0:
+        raise DCUPreflightError("concurrency child process group id is missing or invalid")
+    # The group may still contain a nested worker after the outer child exits;
+    # signal the owned group even when ``poll()`` is no longer ``None``.
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    wait = getattr(process, "wait", None)
+    if process.poll() is None and callable(wait):
+        try:
+            wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+    # Always make a best-effort SIGKILL pass over this process's own group.
+    # This is what closes the descendant-leak window after a fast outer exit.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None and callable(wait):
+        try:
+            wait(timeout=1.0)
+        except Exception:
+            metadata["wait_timeout"] = True
+    metadata["group_cleanup_done"] = True
+    metadata["forced_termination"] = True
+    metadata["termination_reason"] = str(reason)
+    metadata["returncode"] = getattr(process, "returncode", None)
+
+
+def _collect_concurrency_process(
+    metadata: dict[str, Any],
+    *,
+    timeout: float,
+) -> tuple[str, str]:
+    """Collect one child without allowing a killed sibling to linger."""
+
+    process = metadata["process"]
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as first_timeout:
+        metadata["timeout_error"] = str(first_timeout)
+        if not metadata.get("forced_termination"):
+            _kill_concurrency_process(metadata, reason=f"timeout after {timeout:.3f}s")
+        try:
+            stdout, stderr = process.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired as second_timeout:
+            metadata["collection_timeout"] = True
+            metadata["terminal_collection_error"] = str(second_timeout)
+            stdout = getattr(second_timeout, "output", None) or getattr(first_timeout, "output", None) or ""
+            stderr = getattr(second_timeout, "stderr", None) or getattr(first_timeout, "stderr", None) or ""
+            _close_concurrency_process_pipes(process)
+        except Exception as exc:
+            metadata["collection_error"] = str(exc)
+            stdout = getattr(first_timeout, "output", None) or ""
+            stderr = getattr(first_timeout, "stderr", None) or ""
+            _close_concurrency_process_pipes(process)
+    metadata["stdout"] = _decode_process_output(stdout)
+    metadata["stderr"] = _decode_process_output(stderr)
+    process_returncode = getattr(process, "returncode", None)
+    if metadata.get("returncode") is None or metadata.get("forced_termination") is not True:
+        metadata["returncode"] = process_returncode
+    return metadata["stdout"], metadata["stderr"]
+
+
+def _validate_concurrency_child_result(
+    child_result: Mapping[str, Any],
+    *,
+    expected_physical_device: int,
+    expected_steps: int,
+) -> dict[str, Any]:
+    """Validate the complete evidence contract emitted by one child."""
+
+    def require_field(mapping: Mapping[str, Any], field: str, path: str) -> Any:
+        if field not in mapping:
+            raise DCUPreflightError(f"child evidence missing {path}")
+        return mapping[field]
+
+    if require_field(child_result, "status", "status") != "PASS":
+        raise DCUPreflightError("child evidence status must be PASS")
+    for field, expected in (
+        ("physical_device", expected_physical_device),
+        ("logical_device", EXPECTED_LOGICAL_DEVICE),
+        ("reset_count", 1),
+        ("decision_count", expected_steps),
+        ("env_step_count", expected_steps),
+    ):
+        if require_field(child_result, field, field) != expected:
+            raise DCUPreflightError(f"child evidence {field} does not match {expected!r}")
+    if require_field(child_result, "model_load_success", "model_load_success") is not True:
+        raise DCUPreflightError("child evidence model_load_success must be true")
+
+    egl = require_field(child_result, "egl", "egl")
+    if not isinstance(egl, Mapping):
+        raise DCUPreflightError("child evidence egl must be a mapping")
+    count = require_field(egl, "eglQueryDevicesEXT_device_count", "egl.count")
+    if isinstance(count, bool) or not isinstance(count, int) or count <= int(EXPECTED_EGL_DEVICE_ID):
+        raise DCUPreflightError("child evidence EGL count must be greater than selected ordinal 8")
+    if require_field(egl, "selected_MUJOCO_EGL_DEVICE_ID", "egl.selected") != EXPECTED_EGL_DEVICE_ID:
+        raise DCUPreflightError("child evidence selected EGL ordinal must be 8")
+    test_device = require_field(egl, "test_device", "egl.test_device")
+    if not isinstance(test_device, Mapping) or require_field(test_device, "returncode", "egl.test_device.returncode") != 0:
+        raise DCUPreflightError("child evidence EGL test_device must return 0")
+
+    gl = require_field(child_result, "gl", "gl")
+    if not isinstance(gl, Mapping):
+        raise DCUPreflightError("child evidence gl must be a mapping")
+    try:
+        _assert_exact_llvmpipe(gl)
+    except DCUPreflightError as exc:
+        raise DCUPreflightError(f"child evidence exact GL identity failed: {exc}") from exc
+
+    action_evidence = require_field(child_result, "action_evidence", "action_evidence")
+    if isinstance(action_evidence, (str, bytes)) or not isinstance(action_evidence, Sequence):
+        raise DCUPreflightError("child evidence action_evidence must be a sequence")
+    if len(action_evidence) != expected_steps:
+        raise DCUPreflightError("child evidence action_evidence count does not equal two")
+    for index, action in enumerate(action_evidence):
+        if not isinstance(action, Mapping):
+            raise DCUPreflightError(f"child evidence action_evidence[{index}] must be a mapping")
+        if require_field(action, "decision_index", f"action_evidence[{index}].decision_index") != index:
+            raise DCUPreflightError("child evidence action decision indices are not contiguous")
+        if require_field(action, "shape", f"action_evidence[{index}].shape") != [1, EXPECTED_ACTION_DIM]:
+            raise DCUPreflightError("child evidence action shape must be [1, 7]")
+        if require_field(action, "dtype", f"action_evidence[{index}].dtype") != "float32":
+            raise DCUPreflightError("child evidence action dtype must be float32")
+        if require_field(action, "finite", f"action_evidence[{index}].finite") is not True:
+            raise DCUPreflightError("child evidence action must be finite")
+
+    latency = require_field(child_result, "latency", "latency")
+    if not isinstance(latency, Mapping):
+        raise DCUPreflightError("child evidence latency must be a mapping")
+
+    def finite_nonnegative_sequence(field: str, minimum_length: int) -> None:
+        values = require_field(latency, field, f"latency.{field}")
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise DCUPreflightError(f"child evidence latency.{field} must be a sequence")
+        if len(values) < minimum_length:
+            raise DCUPreflightError(
+                f"child evidence latency.{field} must contain at least {minimum_length} values"
+            )
+        for index, value in enumerate(values):
+            if isinstance(value, (bool, np.bool_)) or not isinstance(
+                value, (int, float, np.integer, np.floating)
+            ):
+                raise DCUPreflightError(f"child evidence latency.{field}[{index}] must be numeric")
+            if not math.isfinite(float(value)) or float(value) < 0:
+                raise DCUPreflightError(
+                    f"child evidence latency.{field}[{index}] must be finite and non-negative"
+                )
+
+    for latency_field in ("inference_seconds", "env_step_seconds", "worker_wall_seconds"):
+        finite_nonnegative_sequence(latency_field, expected_steps)
+        if len(latency[latency_field]) != expected_steps:
+            raise DCUPreflightError(
+                f"child evidence latency.{latency_field} must contain exactly {expected_steps} values"
+            )
+    finite_nonnegative_sequence("render_seconds", 1)
+
+    memory = require_field(child_result, "memory", "memory")
+    if not isinstance(memory, Mapping):
+        raise DCUPreflightError("child evidence memory must be a mapping")
+    peak_memory = require_field(memory, "dcu_peak_memory_bytes", "memory.dcu_peak_memory_bytes")
+    if isinstance(peak_memory, bool) or not isinstance(peak_memory, (int, np.integer)) or peak_memory < 0:
+        raise DCUPreflightError("child evidence memory peak must be a non-negative integer")
+    if not isinstance(require_field(memory, "worker_response", "memory.worker_response"), Mapping):
+        raise DCUPreflightError("child evidence memory.worker_response must be a mapping")
+
+    network = require_field(child_result, "network", "network")
+    if not isinstance(network, Mapping):
+        raise DCUPreflightError("child evidence network must be a mapping")
+    if network.get("offline") is not True or network.get("hub_fallback") is not False:
+        raise DCUPreflightError("child evidence must prove offline execution without Hub fallback")
+
+    environment = require_field(child_result, "environment", "environment")
+    if not isinstance(environment, Mapping):
+        raise DCUPreflightError("child evidence environment must be a mapping")
+    cpu_child = require_field(environment, "cpu_child", "environment.cpu_child")
+    if not isinstance(cpu_child, Mapping):
+        raise DCUPreflightError("child evidence CPU environment must be a mapping")
+    for field in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        if require_field(cpu_child, field, f"environment.cpu_child.{field}") is not None:
+            raise DCUPreflightError(f"child evidence CPU environment {field} must be unset")
+    if require_field(cpu_child, "MUJOCO_EGL_DEVICE_ID", "environment.cpu_child.MUJOCO_EGL_DEVICE_ID") != EXPECTED_EGL_DEVICE_ID:
+        raise DCUPreflightError("child evidence CPU environment EGL ordinal must be 8")
+
+    device = require_field(child_result, "device", "device")
+    if not isinstance(device, Mapping):
+        raise DCUPreflightError("child evidence device must be a mapping")
+    for field, expected in (
+        ("physical_k100", expected_physical_device),
+        ("nested_worker_hip_visible_devices", str(expected_physical_device)),
+        ("nested_worker_cuda_visible_devices", "0"),
+        ("torch_logical_device", EXPECTED_LOGICAL_DEVICE),
+    ):
+        if require_field(device, field, f"device.{field}") != expected:
+            raise DCUPreflightError(f"child evidence device.{field} does not match {expected!r}")
+
+    worker = require_field(child_result, "worker", "worker")
+    if not isinstance(worker, Mapping):
+        raise DCUPreflightError("child evidence worker must be a mapping")
+    if require_field(worker, "physical_device", "worker.physical_device") != expected_physical_device:
+        raise DCUPreflightError("child evidence worker physical device does not match assignment")
+    if require_field(worker, "torch_logical_device", "worker.torch_logical_device") != EXPECTED_LOGICAL_DEVICE:
+        raise DCUPreflightError("child evidence worker logical device must be cuda:0")
+    torch_device_name = require_field(worker, "torch_device_name", "worker.torch_device_name")
+    if not isinstance(torch_device_name, str) or not torch_device_name.strip():
+        raise DCUPreflightError("child evidence worker torch device name is missing")
+    if require_field(worker, "model_load_success", "worker.model_load_success") is not True:
+        raise DCUPreflightError("child evidence worker model load must succeed")
+    nested = require_field(worker, "compute_environment", "worker.compute_environment")
+    if not isinstance(nested, Mapping):
+        raise DCUPreflightError("child evidence nested worker environment must be a mapping")
+    for field, expected in (
+        ("physical_k100", expected_physical_device),
+        ("HIP_VISIBLE_DEVICES", str(expected_physical_device)),
+        ("CUDA_VISIBLE_DEVICES", "0"),
+        ("torch_logical_device", EXPECTED_LOGICAL_DEVICE),
+    ):
+        if require_field(nested, field, f"worker.compute_environment.{field}") != expected:
+            raise DCUPreflightError(
+                f"child evidence worker.compute_environment.{field} does not match {expected!r}"
+            )
+    return dict(child_result)
+
+
 def _run_concurrency_impl(
     *,
     config: Mapping[str, Any],
@@ -2983,11 +3641,17 @@ def _run_concurrency_impl(
     config_path: str | Path | None = None,
     **_: Any,
 ) -> dict[str, Any]:
-    """Popen two independent one-step children before waiting on either."""
+    """Popen two independent fixed-boundary children before waiting on either."""
 
     del phase, actual_project_sha
     run_dir = Path(run_directory).resolve()
     runtime = _require_mapping(config["runtime"], "runtime")
+    concurrency = _require_mapping(config["concurrency"], "concurrency")
+    steps = _require_exact(
+        concurrency.get("steps_per_worker"),
+        EXPECTED_CONCURRENCY_STEPS_PER_WORKER,
+        "concurrency.steps_per_worker",
+    )
     config_file = _config_file_path(config, config_path)
     children_root = run_dir / "children"
     if children_root.exists():
@@ -3004,7 +3668,8 @@ def _run_concurrency_impl(
         for index, device in enumerate(devices)
     ]
     children: list[dict[str, Any]] = []
-    processes: list[tuple[dict[str, Any], Any]] = []
+    processes: list[dict[str, Any]] = []
+    first_error: DCUPreflightError | None = None
     started = time.perf_counter()
     try:
         # Deliberately complete this loop before calling communicate(): both
@@ -3013,7 +3678,13 @@ def _run_concurrency_impl(
             child_dir = children_root / f"child{index}"
             if child_dir.exists():
                 raise FileExistsError(child_dir)
-            environment = _worker_environment(config, device)
+            # Only the nested model worker receives compute visibility.  The
+            # CPU child keeps the independent validated EGL ordinal.
+            environment = build_cpu_child_environment(config)
+            if environment.get("HIP_VISIBLE_DEVICES") is not None or environment.get("CUDA_VISIBLE_DEVICES") is not None:
+                raise DCUPreflightError("CPU child environment must not contain HIP/CUDA visibility")
+            if environment.get("MUJOCO_EGL_DEVICE_ID") != EXPECTED_EGL_DEVICE_ID:
+                raise DCUPreflightError("CPU child environment must retain EGL ordinal 8")
             process = subprocess.Popen(
                 command,
                 cwd=str(_ROOT),
@@ -3025,90 +3696,209 @@ def _run_concurrency_impl(
                 encoding="utf-8",
                 errors="strict",
                 shell=False,
+                start_new_session=True,
             )
+            process_pid = getattr(process, "pid", None)
+            if isinstance(process_pid, bool) or not isinstance(process_pid, int) or process_pid <= 0:
+                _cleanup_started_concurrency_process(process)
+                raise DCUPreflightError("concurrency child process did not expose a valid pid")
             processes.append(
-                (
-                    {
-                        "index": index,
-                        "physical_device": device,
-                        "logical_device": EXPECTED_LOGICAL_DEVICE,
-                        "command": command,
-                        "directory": child_dir,
-                        "process": process,
+                {
+                    "index": index,
+                    "physical_device": device,
+                    "logical_device": EXPECTED_LOGICAL_DEVICE,
+                    "command": command,
+                    "directory": child_dir,
+                    "process": process,
+                    # start_new_session makes the child PID the process-group
+                    # ID; only this group is ever signalled during cleanup.
+                    "pgid": process_pid,
+                    "cpu_environment": {
+                        "HIP_VISIBLE_DEVICES": environment.get("HIP_VISIBLE_DEVICES"),
+                        "CUDA_VISIBLE_DEVICES": environment.get("CUDA_VISIBLE_DEVICES"),
+                        "MUJOCO_EGL_DEVICE_ID": environment.get("MUJOCO_EGL_DEVICE_ID"),
+                        "MUJOCO_GL": environment.get("MUJOCO_GL"),
+                        "PYOPENGL_PLATFORM": environment.get("PYOPENGL_PLATFORM"),
                     },
-                    process,
-                )
+                }
             )
     except BaseException:
-        for _, process in processes:
+        for metadata in processes:
+            _kill_concurrency_process(metadata, reason="parent launch failure")
             try:
-                process.terminate()
+                _collect_concurrency_process(metadata, timeout=1.0)
             except Exception:
                 pass
+            _terminalize_concurrency_manifest(
+                metadata["directory"],
+                status="TERMINATED",
+                returncode=metadata.get("returncode"),
+                reason=str(metadata.get("termination_reason", "parent launch failure")),
+            )
         raise
 
     timeout = _timeout_seconds(runtime, "startup") + _timeout_seconds(runtime, "forward") + _timeout_seconds(runtime, "shutdown")
     try:
-        for metadata, process in processes:
+        # Waiting in launch order retains deterministic manifests.  Any first
+        # failure immediately terminates every still-live sibling before it can
+        # leak a RUNNING manifest or process.
+        for metadata in processes:
+            process = metadata["process"]
+            if first_error is not None and process.poll() is None:
+                _kill_concurrency_process(
+                    metadata, reason=f"terminated after child {first_error.args[0]}"
+                )
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
+                stdout, stderr = _collect_concurrency_process(metadata, timeout=timeout)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = DCUPreflightError(
+                        f"concurrency child {metadata['index']} collection failed: {exc}"
+                    )
+                _kill_concurrency_process(metadata, reason=f"collection failure: {exc}")
                 try:
-                    process.kill()
+                    stdout, stderr = _collect_concurrency_process(metadata, timeout=1.0)
                 except Exception:
-                    pass
-                stdout, stderr = process.communicate()
-                raise DCUPreflightError(
-                    f"concurrency child {metadata['index']} timed out after {timeout:.3f}s"
-                ) from exc
+                    stdout, stderr = "", ""
             child_dir = metadata["directory"]
             child_dir.mkdir(parents=True, exist_ok=True)
             process_stdout = child_dir / "process_stdout.log"
             process_stderr = child_dir / "process_stderr.log"
-            _write_text_exclusive(process_stdout, str(stdout or ""))
-            _write_text_exclusive(process_stderr, str(stderr or ""))
-            returncode = process.returncode
+            if not process_stdout.exists():
+                _write_text_exclusive(process_stdout, str(stdout or ""))
+            if not process_stderr.exists():
+                _write_text_exclusive(process_stderr, str(stderr or ""))
+            returncode = metadata.get("returncode", getattr(process, "returncode", None))
             metadata["returncode"] = returncode
             manifest_path = child_dir / "run_manifest.json"
             result_path = child_dir / "child_result.json"
-            if returncode != 0:
-                raise DCUPreflightError(
-                    f"concurrency child {metadata['index']} returned {returncode}"
+            if metadata.get("forced_termination"):
+                reason = str(metadata.get("termination_reason", "terminated by concurrency parent"))
+                _terminalize_concurrency_manifest(
+                    child_dir,
+                    status="TERMINATED",
+                    returncode=returncode,
+                    reason=reason,
                 )
-            if not manifest_path.is_file() or not result_path.is_file():
-                raise DCUPreflightError(
-                    f"concurrency child {metadata['index']} did not produce its result manifest"
-                )
-            child_result = json.loads(result_path.read_text(encoding="utf-8"))
-            if not isinstance(child_result, Mapping):
-                raise DCUPreflightError(f"concurrency child {metadata['index']} result is not a mapping")
-            for field in ("reset_count", "decision_count", "env_step_count"):
-                if child_result.get(field) != 1:
-                    raise DCUPreflightError(
-                        f"concurrency child {metadata['index']} {field} must equal one"
+                if first_error is None:
+                    first_error = DCUPreflightError(
+                        f"concurrency child {metadata['index']} terminated ({reason})"
                     )
+                continue
+            if returncode != 0:
+                reason = f"concurrency child {metadata['index']} returned {returncode}"
+                _terminalize_concurrency_manifest(
+                    child_dir, status="FAIL", returncode=returncode, reason=reason
+                )
+                if first_error is None:
+                    first_error = DCUPreflightError(reason)
+                continue
+            if not manifest_path.is_file() or not result_path.is_file():
+                reason = f"concurrency child {metadata['index']} did not produce its result manifest"
+                _terminalize_concurrency_manifest(
+                    child_dir, status="FAIL", returncode=returncode, reason=reason
+                )
+                if first_error is None:
+                    first_error = DCUPreflightError(reason)
+                continue
+            try:
+                child_result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                reason = f"concurrency child {metadata['index']} result is unreadable: {exc}"
+                _terminalize_concurrency_manifest(
+                    child_dir, status="FAIL", returncode=returncode, reason=reason
+                )
+                if first_error is None:
+                    first_error = DCUPreflightError(reason)
+                continue
+            if not isinstance(child_result, Mapping):
+                reason = f"concurrency child {metadata['index']} result is not a mapping"
+                _terminalize_concurrency_manifest(
+                    child_dir, status="FAIL", returncode=returncode, reason=reason
+                )
+                if first_error is None:
+                    first_error = DCUPreflightError(reason)
+                continue
+            try:
+                validated_result = _validate_concurrency_child_result(
+                    child_result,
+                    expected_physical_device=int(metadata["physical_device"]),
+                    expected_steps=int(steps),
+                )
+            except DCUPreflightError as exc:
+                reason = f"concurrency child {metadata['index']} evidence invalid: {exc}"
+                _terminalize_concurrency_manifest(
+                    child_dir, status="FAIL", returncode=returncode, reason=reason
+                )
+                if first_error is None:
+                    first_error = DCUPreflightError(reason)
+                continue
+            _terminalize_concurrency_manifest(
+                child_dir, status="PASS", returncode=returncode, reason="completed"
+            )
             metadata["manifest"] = str(manifest_path)
-            metadata["result"] = dict(child_result)
+            metadata["result"] = validated_result
             metadata.pop("process", None)
             children.append(metadata)
     finally:
-        # A failed first child must not leave the second process behind.
-        for metadata, process in processes:
-            if process.poll() is None:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+        # Every child still carrying a process handle is incomplete.  Its
+        # outer process may already have exited while a nested worker keeps
+        # the owned process group alive, so cleanup is intentionally not
+        # guarded by poll().
+        for metadata in processes:
+            process = metadata.get("process")
+            if process is None:
+                continue
+            manifest_path = metadata["directory"] / "run_manifest.json"
+            existing_status = None
+            existing_reason = "concurrency parent cleanup"
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(manifest, Mapping):
+                    existing_status = manifest.get("status")
+                    if manifest.get("termination_reason"):
+                        existing_reason = str(manifest["termination_reason"])
+            except (OSError, json.JSONDecodeError):
+                pass
+            if metadata.get("group_cleanup_done") is not True:
+                _kill_concurrency_process(metadata, reason="concurrency parent cleanup")
+            try:
+                _collect_concurrency_process(metadata, timeout=1.0)
+            except Exception:
+                pass
+            status = existing_status if existing_status in {"PASS", "FAIL", "TERMINATED"} else "TERMINATED"
+            _terminalize_concurrency_manifest(
+                metadata["directory"],
+                status=status,
+                returncode=metadata.get("returncode"),
+                reason=existing_reason,
+            )
     elapsed = time.perf_counter() - started
+    if first_error is not None:
+        raise first_error
     if len(children) != 2:
         raise DCUPreflightError(f"concurrency requires two completed children, got {len(children)}")
+    total_env_steps = sum(int(child["result"]["env_step_count"]) for child in children)
+    total_policy_decisions = sum(int(child["result"]["decision_count"]) for child in children)
+    env_steps_per_second = total_env_steps / elapsed if elapsed else None
+    policy_decisions_per_second = total_policy_decisions / elapsed if elapsed else None
+    throughput = {
+        "workers": 2,
+        "wall_seconds": elapsed,
+        "workers_per_second": 2.0 / elapsed if elapsed else None,
+        "total_env_steps": total_env_steps,
+        "total_policy_decisions": total_policy_decisions,
+        "env_steps_per_second": env_steps_per_second,
+        "policy_decisions_per_second": policy_decisions_per_second,
+    }
     return {
         "status": "PASS",
         "workers": 2,
         "physical_devices": devices,
         "logical_device_per_child": EXPECTED_LOGICAL_DEVICE,
         "card0_reason": config["runtime"]["card0_reason"],
-        "wall_throughput": {"workers": 2, "wall_seconds": elapsed, "workers_per_second": 2.0 / elapsed if elapsed else None},
+        "wall_throughput": throughput,
+        "concurrent_throughput": dict(throughput),
         "children": children,
     }
 
@@ -3641,6 +4431,7 @@ __all__ = [
     "FORBIDDEN_BACKENDS",
     "PATCH_PATH",
     "build_worker_environment",
+    "build_cpu_child_environment",
     "build_concurrency_child_command",
     "build_cpu_runtime",
     "compare_outputs",

@@ -107,9 +107,10 @@ concurrency:
   workers: 2
   physical_devices: [0, 1]
   logical_device: cuda:0
+  steps_per_worker: 2
 
 project:
   allowed_dirty_paths:
     - AGENTS.md
   allowed_dirty_sha256:
-    AGENTS.md: edb351e926097b9b6a39b3d6900c48797e7d666bd132e2ad48b6ab711920314b
+    AGENTS.md: 956a88bf24253c7120be85ec5b446771e60ff9cac95b7932e7a10d5e3c5fc5d8
