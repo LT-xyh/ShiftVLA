@@ -1,0 +1,100 @@
+schema_version: 1
+name: baseline_a
+
+# Frozen, task-major 3 x 5 matrix.  No replacement or retry is permitted.
+seed: 2027
+suite: libero_spatial
+task_ids: [0, 4, 9]
+init_state_ids: [0, 1, 2, 3, 4]
+task_names:
+  "0": pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate
+  "4": pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate
+  "9": pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate
+
+observation:
+  type: pixels_agent_pos
+  height: 360
+  width: 360
+action:
+  dim: 7
+  chunk_size: 50
+  n_action_steps: 1
+horizon: 280
+
+checkpoint:
+  repo_id: HuggingFaceVLA/smolvla_libero
+  revision: 6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/smolvla_libero/6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  sha256: 71d9563c8295284acba8fc2d5c19de000d6fe9ba58a406832af7ef3d221ed52f
+base_model:
+  repo_id: HuggingFaceTB/SmolVLM2-500M-Instruct
+  revision: 7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/smolvlm2-500m-instruct/7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  sha256: b9bfd456c9472c0acd5719d6e514c4b859891af205ee1a736552fd3497b8b0c3
+assets:
+  repo_id: lerobot/libero-assets
+  revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  manifest_sha256: 1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85
+
+libero_config:
+  path: /public/home/xuyinghao/tmp/shiftvla-libero-config/config.yaml
+  sha256: 98d57e0d3d7b70bab5c66a110ecc333c737895e9dcd457c06ec94b4150e0ecc8
+preflight_config: /public/home/xuyinghao/workspace/vla/configs/m0/dcu_preflight.yaml
+preflight_config_sha256: 3ac615f60a254fe10968f7cf39d51f0d501bbc3b02992ac49fbdcbe2912ba058
+
+runtime:
+  cpu_python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+  dcu_python: /public/home/xuyinghao/tmp/shiftvla-libero-dcu/bin/python
+  cpu_runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-runtime.txt
+  dcu_runtime_lock: /public/home/xuyinghao/workspace/vla/runtime/locks/shiftvla-libero-dcu-runtime.txt
+  cpu_runtime_lock_sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
+  dcu_runtime_lock_sha256: cc507d48c64e72a9d2f6552bc5fa638217f9e6a2addef0067ded3d0adce30ed2
+  cpu_child_compute_visibility: unset
+  nested_worker_compute_visibility: physical_device
+  workers: 2
+  physical_devices: [0, 1]
+  logical_device: cuda:0
+  worker_startup_timeout_seconds: 300
+  worker_forward_timeout_seconds: 300
+  worker_shutdown_timeout_seconds: 30
+  parent_collection_timeout_seconds: 86400
+  renderer:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+  offline:
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+
+# Top-level aliases are consumed only by the existing dcu worker seam.
+renderer:
+  MUJOCO_GL: egl
+  PYOPENGL_PLATFORM: egl
+  MUJOCO_EGL_DEVICE_ID: "8"
+offline:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_DATASETS_OFFLINE: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+
+output:
+  root: /public/home/xuyinghao/workspace/vla/runs/m0_baseline_a
+perturbation: false
+action_noise:
+  source: native_policy_rng
+  explicit: false
+
+provenance:
+  lerobot_git_sha: 7e241bd630a3719a56157a497ce5d08f244784f1
+  libero_git_sha: 8561c60eea2fb93096146f240194649df73d8b1e
+  python: 3.11.16
+  pytorch: 2.7.1+das.opt1.dtk25042
+  transformers: 5.5.4
+  cuda: none-under-hip
+  hip: 6.x-host-locked
+  gpu: K100_AI
