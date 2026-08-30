@@ -1830,6 +1830,9 @@ def _json_safe(value: Any) -> Any:
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_json_safe(item) for item in value]
+        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, allow_nan=False, separators=(",", ":")))
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating,)):
@@ -4168,10 +4171,8 @@ def _write_terminal_parent_fallback(
         write_json_no_overwrite(run_directory / "terminal_manifest.json", manifest)
     except FileExistsError:
         pass
-    except BaseException:
-        # A pre-existing terminal artifact remains authoritative; there is no
-        # safe overwrite path after a persistence failure.
-        return
+    except BaseException as exc:
+        raise BaselineRuntimeError(f"terminal provenance publication failed: {exc}") from exc
 
 
 def _write_parent_failure_evidence(

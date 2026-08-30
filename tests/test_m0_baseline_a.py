@@ -1276,6 +1276,105 @@ def test_no_overwrite_json_is_atomic(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_json_safe_normalizes_nested_sets_with_deterministic_order() -> None:
+    baseline = _module()
+    value = {
+        "outer": {"zeta", "alpha", "mu"},
+        "nested": [{"numbers": {3, 1, 2}}],
+    }
+
+    normalized = baseline._json_safe(value)
+
+    assert normalized == {
+        "outer": ["alpha", "mu", "zeta"],
+        "nested": [{"numbers": [1, 2, 3]}],
+    }
+    assert baseline._canonical_json(value) == baseline._canonical_json(value)
+
+
+def test_parent_run_manifest_publishes_nested_set_preflight_evidence(tmp_path: Path) -> None:
+    baseline = _module()
+    config = _config()
+    matrix = baseline.build_episode_matrix(config)
+    episodes = [_episode(baseline, row, success=True, steps=3) for row in matrix]
+    worker_metrics = {
+        "A": _genuine_worker_metrics(completed=8, wall=2.0, busy=1.0),
+        "B": _genuine_worker_metrics(completed=7, wall=3.0, busy=1.5),
+    }
+    aggregate = baseline.aggregate_results(
+        episodes,
+        planned=matrix,
+        total_wall_time_seconds=5.0,
+        worker_metrics=worker_metrics,
+        require_worker_metrics=True,
+    )
+    provenance = {
+        **config["provenance"],
+        "git_sha": "project-sha",
+        "checkpoint_revision": config["checkpoint"]["revision"],
+        "trajectory_ids": [row["trajectory_id"] for row in matrix],
+    }
+    run_directory = tmp_path / "run"
+
+    baseline._write_run_artifacts(
+        run_directory,
+        config=config,
+        config_path=CONFIG_PATH,
+        project_sha="project-sha",
+        matrix=matrix,
+        episodes=episodes,
+        aggregate=aggregate,
+        provenance=provenance,
+        status="PASS",
+        command=["test"],
+        preflight_evidence={"patch": {"files": {"b.py", "a.py"}}},
+    )
+
+    published = json.loads((run_directory / "run_manifest.json").read_text(encoding="utf-8"))
+    assert published["preflight"]["patch"]["files"] == ["a.py", "b.py"]
+    assert baseline.validate_manifest(published) is True
+
+
+def test_terminal_fallback_publishes_json_safe_evidence(tmp_path: Path) -> None:
+    baseline = _module()
+    config = _config()
+    matrix = baseline.build_episode_matrix(config)
+    run_directory = tmp_path / "run"
+
+    baseline._write_terminal_parent_fallback(
+        run_directory=run_directory,
+        config=config,
+        matrix=matrix,
+        episodes=[],
+        reason="serialization failure",
+        runtime_failures=[{"reason": "serialization failure"}],
+        preflight_evidence={"patch": {"files": {"b.py", "a.py"}}},
+    )
+
+    published = json.loads((run_directory / "terminal_manifest.json").read_text(encoding="utf-8"))
+    assert published["preflight"]["patch"]["files"] == ["a.py", "b.py"]
+    assert published["status"] == "BLOCKED"
+
+
+def test_terminal_fallback_surfaces_publication_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    baseline = _module()
+
+    def fail_writer(*_: Any, **__: Any) -> Path:
+        raise OSError("terminal publication failed")
+
+    monkeypatch.setattr(baseline, "write_json_no_overwrite", fail_writer)
+    with pytest.raises(baseline.BaselineRuntimeError, match="terminal publication failed"):
+        baseline._write_terminal_parent_fallback(
+            run_directory=tmp_path / "run",
+            config=_config(),
+            matrix=baseline.build_episode_matrix(_config()),
+            episodes=[],
+            reason="primary failure",
+            runtime_failures=[{"reason": "primary failure"}],
+            preflight_evidence={},
+        )
+
+
 def test_run_manifest_schema_requires_full_provenance_and_gate_verdict() -> None:
     baseline = _module()
     config = _config()
