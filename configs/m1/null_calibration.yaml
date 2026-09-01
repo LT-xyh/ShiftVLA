@@ -1,6 +1,11 @@
 schema_version: 1
 name: m1_null_calibration
-config_sha256: e2ad3ce18017ba5b2d79aaf426f30b033ebd84318945a2476864bbb1cd244218
+config_sha256: c7937dbf0ffb7298282a1eff6263f3bff33d08a1f1dcaabae11e60224bd371bb
+strict_runtime_contract: true
+obs_type: pixels_agent_pos
+state_replay_config:
+  path: configs/m1/state_replay.yaml
+  sha256: 730aff4a41fd91fb837102ca5f363a4a142bf7010140f5176940700f1d1fd5f0
 
 # This run specification is deliberately separate from state replay.  The
 # parent freezes it before any worker is launched; workers only consume the
@@ -39,11 +44,25 @@ runtime:
     MUJOCO_GL: egl
     PYOPENGL_PLATFORM: egl
     MUJOCO_EGL_DEVICE_ID: "8"
+    expected_gl:
+      vendor: Mesa/X.org
+      renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+      version: 3.1 Mesa 21.1.5
 
 quantity_selection:
   # This path policy is frozen before outcomes and is applied identically to
   # every pair/window.  Missing or inconsistent paths fail closed.
-  root_patterns: [qpos, qvel, objects, gripper_physical]
+  root_patterns: [integration, qpos, qvel, controller, eef_pose, gripper, gripper_physical, objects, contacts]
+
+invariants:
+  required_roots: [integration, qpos, qvel, controller, eef_pose, gripper, gripper_physical, objects, body_xpos, body_xquat, contacts, predicates, success, counters, observables, observable_cache]
+
+terminal_contract:
+  step: 82
+  termination_reason: predicate_transition
+  success: true
+  terminated: true
+  truncated: false
 
 renderer:
   camera: agentview

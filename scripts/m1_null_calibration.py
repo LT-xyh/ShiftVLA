@@ -16,7 +16,9 @@ import hashlib
 import json
 import math
 import os
+import platform
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,6 +55,44 @@ REGIME_NAMES: tuple[str, ...] = (
 DEFAULT_QUANTITY_ROOTS = ("qpos", "qvel", "objects", "gripper_physical")
 DEFAULT_CAMERA = "agentview"
 DEFAULT_RENDER_KEY = "render_rgb"
+EXPECTED_PAIR_IDS = tuple(f"{PAIR_PREFIX}{index:03d}" for index in range(PAIR_COUNT))
+STRICT_QUANTITY_ROOTS = (
+    "integration",
+    "qpos",
+    "qvel",
+    "controller",
+    "eef_pose",
+    "gripper",
+    "gripper_physical",
+    "objects",
+    "contacts",
+)
+STRICT_INVARIANT_ROOTS = (
+    "integration",
+    "qpos",
+    "qvel",
+    "controller",
+    "eef_pose",
+    "gripper",
+    "gripper_physical",
+    "objects",
+    "body_xpos",
+    "body_xquat",
+    "contacts",
+    "predicates",
+    "success",
+    "counters",
+    "observables",
+    "observable_cache",
+)
+TERMINAL_FIELDS = ("step", "termination_reason", "success", "terminated", "truncated")
+DEFAULT_TERMINAL_CONTRACT = {
+    "step": ACTION_SHAPE[0],
+    "termination_reason": "predicate_transition",
+    "success": True,
+    "terminated": True,
+    "truncated": False,
+}
 FORBIDDEN_PROTOCOL_FIELDS = (
     "restore_count",
     "capture_count",
@@ -271,6 +311,188 @@ def _resolve_path(value: str | Path, *, base: Path = _ROOT) -> Path:
     return target if target.is_absolute() else base / target
 
 
+def _official_runtime_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve the complete frozen state-replay construction configuration."""
+
+    if not bool(config.get("strict_runtime_contract")):
+        return dict(config)
+    obs_type = config.get("obs_type")
+    if not isinstance(obs_type, str) or not obs_type.strip():
+        raise ProvenanceError("strict null config requires obs_type")
+    reference = config.get("state_replay_config")
+    if not isinstance(reference, Mapping):
+        raise ProvenanceError("strict null config requires state_replay_config path and SHA")
+    path_value, expected_sha = reference.get("path"), reference.get("sha256")
+    if not isinstance(path_value, (str, Path)) or not str(path_value).strip():
+        raise ProvenanceError("state_replay_config.path is required")
+    if not isinstance(expected_sha, str) or len(expected_sha) != 64:
+        raise ProvenanceError("state_replay_config.sha256 is required")
+    state_path = _resolve_path(path_value)
+    state_config = _load_document(state_path)
+    try:
+        from scripts import m1_state_replay
+
+        # The state-replay contract hashes the canonical parsed config with
+        # its self-reference removed from ``paths``; its validator is the
+        # authority for the complete pinned runtime construction fields.
+        paths = state_config.get("paths")
+        actual_sha = paths.get("config_sha256") if isinstance(paths, Mapping) else None
+        if str(actual_sha).lower() != expected_sha.lower():
+            raise ProvenanceError("state_replay_config SHA drift")
+        m1_state_replay.validate_config(state_config)
+    except ProvenanceError:
+        raise
+    except Exception as exc:
+        raise ProvenanceError(f"state replay runtime config is not valid: {exc}") from exc
+    merged = copy.deepcopy(state_config)
+    # Null calibration owns the same task identity but never the replay tape
+    # or policy settings.  Preserve the full validated runtime sections.
+    merged["task"] = copy.deepcopy(config.get("task", state_config.get("task", TASK)))
+    merged["obs_type"] = obs_type
+    merged["strict_provenance"] = True
+    merged["authoritative"] = True
+    return merged
+
+
+def _strict_task(value: Any, *, field_name: str = "task") -> dict[str, Any]:
+    if not isinstance(value, Mapping) or dict(value) != TASK:
+        raise ProvenanceError(f"{field_name} must equal the frozen M1 task identity {TASK!r}")
+    return dict(TASK)
+
+
+def _terminal_contract_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    raw = config.get("terminal_contract", DEFAULT_TERMINAL_CONTRACT)
+    if not isinstance(raw, Mapping):
+        raise ProvenanceError("terminal_contract must be a mapping")
+    contract: dict[str, Any] = {}
+    for field_name in TERMINAL_FIELDS:
+        if field_name not in raw:
+            raise ProvenanceError(f"terminal_contract.{field_name} is required")
+        contract[field_name] = copy.deepcopy(raw[field_name])
+    if isinstance(contract["step"], bool) or int(contract["step"]) != ACTION_SHAPE[0]:
+        raise ProvenanceError("terminal_contract.step must be exactly 82")
+    if not isinstance(contract["termination_reason"], str) or not contract["termination_reason"].strip():
+        raise ProvenanceError("terminal_contract.termination_reason is required")
+    for field_name in ("success", "terminated", "truncated"):
+        if not isinstance(contract[field_name], bool):
+            raise ProvenanceError(f"terminal_contract.{field_name} must be boolean")
+    return contract
+
+
+def _registry_terminal_contract(
+    registry: Mapping[str, Any], trace: Mapping[str, Any], config: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Resolve terminal semantics from source coverage and the frozen config.
+
+    The hard-gate registry records legal step/reason at the release and
+    predicate-transition windows.  The null config freezes the complete
+    returned-terminal tuple, including the three boolean fields that older
+    registries did not repeat in their source-coverage rows.
+    """
+
+    contract = _terminal_contract_from_config(config)
+    observed: list[Mapping[str, Any]] = []
+    for owner in (trace, registry):
+        terminal = owner.get("terminal") if isinstance(owner, Mapping) else None
+        if isinstance(terminal, Mapping):
+            observed.append(terminal)
+    windows = trace.get("windows") if isinstance(trace, Mapping) else None
+    if isinstance(windows, Sequence) and not isinstance(windows, (str, bytes)):
+        for window in windows:
+            if not isinstance(window, Mapping):
+                continue
+            coverage = window.get("source_coverage")
+            if isinstance(coverage, Mapping):
+                observed.append(coverage)
+    for item in observed:
+        if "legal_terminal_step" in item:
+            try:
+                legal_step = int(item["legal_terminal_step"])
+            except (TypeError, ValueError) as exc:
+                raise ProvenanceError("registry legal terminal step is not an integer") from exc
+            if legal_step != contract["step"]:
+                raise ProvenanceError("registry legal terminal step differs from terminal_contract")
+        reason = item.get("terminal_reason", item.get("termination_reason"))
+        if reason is not None and str(reason) != contract["termination_reason"]:
+            raise ProvenanceError("registry terminal reason differs from terminal_contract")
+        for field_name in ("success", "terminated", "truncated"):
+            if field_name in item and item[field_name] != contract[field_name]:
+                raise ProvenanceError(f"registry terminal {field_name} differs from terminal_contract")
+    if not any(
+        "legal_terminal_step" in item or "terminal_reason" in item or "termination_reason" in item
+        for item in observed
+    ):
+        raise ProvenanceError("registry has no frozen legal terminal step/reason")
+    return contract
+
+
+def _validate_strict_null_config(config: Mapping[str, Any], runtime_config: Mapping[str, Any]) -> None:
+    """Validate the null-specific fields before any official construction."""
+
+    if not bool(config.get("strict_runtime_contract")):
+        return
+    _strict_task(config.get("task"), field_name="task")
+    if config.get("obs_type") != runtime_config.get("obs_type"):
+        raise ProvenanceError("null config obs_type differs from state-replay construction config")
+    paths = runtime_config.get("paths")
+    if not isinstance(paths, Mapping):
+        raise ProvenanceError("state-replay construction config has no paths")
+    configured_python = config.get("python")
+    pinned_python = paths.get("cpu_python")
+    if not isinstance(configured_python, str) or not configured_python.strip():
+        raise ProvenanceError("strict null config requires pinned python")
+    if str(Path(configured_python).resolve()) != str(Path(str(pinned_python)).resolve()):
+        raise ProvenanceError("null config python differs from frozen state-replay python")
+    renderer = config.get("renderer")
+    if not isinstance(renderer, Mapping):
+        raise ProvenanceError("strict null config requires renderer camera and observation_key")
+    if not isinstance(renderer.get("camera"), str) or not renderer["camera"].strip():
+        raise ProvenanceError("strict null config renderer.camera is required")
+    if not isinstance(renderer.get("observation_key"), str) or not renderer["observation_key"].strip():
+        raise ProvenanceError("strict null config renderer.observation_key is required")
+    configured_runtime = config.get("runtime")
+    frozen_runtime = runtime_config.get("runtime")
+    if not isinstance(configured_runtime, Mapping) or not isinstance(frozen_runtime, Mapping):
+        raise ProvenanceError("strict null config requires the complete runtime contract")
+    for field_name, expected in (
+        ("offline", True),
+        ("local_only", True),
+        ("include_policy", False),
+        ("call_policy", False),
+        ("call_processors", False),
+        ("fresh_processes", True),
+        ("retry_count", 0),
+    ):
+        if configured_runtime.get(field_name) != expected:
+            raise ProvenanceError(f"runtime.{field_name} must equal frozen value {expected!r}")
+    frozen_renderer = frozen_runtime.get("renderer")
+    configured_renderer = configured_runtime.get("renderer")
+    if not isinstance(frozen_renderer, Mapping) or not isinstance(configured_renderer, Mapping):
+        raise ProvenanceError("strict runtime renderer contract is missing")
+    for field_name in ("MUJOCO_GL", "PYOPENGL_PLATFORM", "MUJOCO_EGL_DEVICE_ID", "expected_gl"):
+        if field_name not in configured_renderer:
+            raise ProvenanceError(f"runtime.renderer.{field_name} is required")
+        if not _exact_equal(configured_renderer[field_name], frozen_renderer.get(field_name)):
+            raise ProvenanceError(f"runtime.renderer.{field_name} differs from frozen runtime")
+    quantity = config.get("quantity_selection")
+    if not isinstance(quantity, Mapping):
+        raise ProvenanceError("strict null config requires quantity_selection")
+    roots = quantity.get("root_patterns")
+    if not isinstance(roots, Sequence) or isinstance(roots, (str, bytes)):
+        raise ProvenanceError("strict null quantity root_patterns are required")
+    normalized_roots = tuple(str(root) for root in roots)
+    if normalized_roots != STRICT_QUANTITY_ROOTS:
+        raise ProvenanceError(
+            "strict null quantity roots must be the complete frozen set "
+            f"{list(STRICT_QUANTITY_ROOTS)!r}"
+        )
+    invariants = config.get("invariants")
+    required_roots = invariants.get("required_roots") if isinstance(invariants, Mapping) else None
+    if tuple(str(root) for root in required_roots or ()) != STRICT_INVARIANT_ROOTS:
+        raise ProvenanceError("strict null invariant required_roots are incomplete or reordered")
+    _terminal_contract_from_config(config)
+
+
 def _load_verified_registry(path: str | Path) -> dict[str, Any]:
     """Load the existing strict registry only when preparation/run is asked."""
 
@@ -290,6 +512,128 @@ def _verify_registry_payload(payload: Mapping[str, Any], path: Path, expected: s
     traces = payload.get("traces")
     if not isinstance(traces, Sequence) or isinstance(traces, (str, bytes)) or not traces:
         raise ProvenanceError("registry has no frozen traces")
+
+
+def _validate_trace_frozen_inputs(trace: Mapping[str, Any], tape_sha: str) -> None:
+    expected = {
+        "suite": TASK["suite"],
+        "task_id": TASK["task_id"],
+        "init_state_id": TASK["init_state_id"],
+        "seed": TASK["seed"],
+        "action_shape": list(ACTION_SHAPE),
+        "action_dtype": "float32",
+        "action_sha256": tape_sha,
+    }
+    for key, expected_value in expected.items():
+        actual = trace.get(key)
+        if key == "action_sha256" and str(actual).lower() == str(expected_value).lower():
+            continue
+        if not _exact_equal(actual, expected_value):
+            raise ProvenanceError(f"registry trace {key} differs from frozen task/action input")
+
+
+def _validate_attempt_schedule_record(
+    record: Mapping[str, Any], *, pair_id: str, side: str, ordinal: int
+) -> None:
+    """Validate one immutable A/B schedule record, including its exact ID."""
+
+    expected = {
+        "attempt_id": f"{pair_id}-{side}",
+        "pair_id": pair_id,
+        "side": side,
+        "ordinal": ordinal,
+        "status": "scheduled",
+    }
+    for name, value in expected.items():
+        if name not in record or not _exact_equal(record[name], value):
+            raise ProvenanceError(
+                f"frozen schedule record for {pair_id}/{side} has invalid {name}: "
+                f"{record.get(name)!r} != {value!r}"
+            )
+
+
+def _validate_frozen_schedule(
+    run_spec: Mapping[str, Any],
+    pair_registry: Mapping[str, Any],
+    *,
+    source_registry: Mapping[str, Any] | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> None:
+    """Fail closed unless the persisted run and pair registries are exact."""
+
+    if not verify_self_hash(run_spec, "run_spec_sha256"):
+        raise ProvenanceError("run specification self-hash is invalid")
+    if not verify_self_hash(pair_registry, "pair_registry_sha256"):
+        raise ProvenanceError("pair registry self-hash is invalid")
+    if run_spec.get("schema_version") != SCHEMA_VERSION or run_spec.get("run_type") != "m1_null_calibration":
+        raise ProvenanceError("run specification schema/type is not frozen")
+    if pair_registry.get("schema_version") != SCHEMA_VERSION or pair_registry.get("registry_type") != "m1_null_calibration_pair_registry":
+        raise ProvenanceError("pair registry schema/type is not frozen")
+    if run_spec.get("pair_count") != PAIR_COUNT or run_spec.get("pair_prefix") != PAIR_PREFIX:
+        raise ProvenanceError("run specification pair count/prefix is not frozen")
+    if pair_registry.get("pair_count") != PAIR_COUNT:
+        raise ProvenanceError("pair registry pair count is not exactly 20")
+    if pair_registry.get("run_spec_sha256") != run_spec.get("run_spec_sha256"):
+        raise ProvenanceError("pair registry does not belong to this run specification")
+    if pair_registry.get("registry_sha256") != run_spec.get("registry_sha256"):
+        raise ProvenanceError("pair registry source registry hash differs from run specification")
+    run_pairs = run_spec.get("pairs")
+    pairs = pair_registry.get("pairs")
+    # The pair registry is the authoritative schedule.  The run specification
+    # also repeats it so a detached pair registry cannot be substituted.
+    if not isinstance(run_pairs, Sequence) or isinstance(run_pairs, (str, bytes)):
+        raise ProvenanceError("run specification has no frozen pair schedule")
+    if not isinstance(pairs, Sequence) or isinstance(pairs, (str, bytes)):
+        raise ProvenanceError("pair registry has no frozen pair schedule")
+    if len(run_pairs) != PAIR_COUNT or len(pairs) != PAIR_COUNT:
+        raise ProvenanceError("frozen schedule must contain exactly 20 pairs")
+    expected_trace_id = run_spec.get("trace_id")
+    seen_attempt_ids: set[str] = set()
+    for index, expected_pair_id in enumerate(EXPECTED_PAIR_IDS):
+        run_pair, pair = run_pairs[index], pairs[index]
+        if not isinstance(run_pair, Mapping) or not isinstance(pair, Mapping):
+            raise ProvenanceError(f"frozen pair {expected_pair_id} is malformed")
+        if run_pair.get("pair_id") != expected_pair_id or pair.get("pair_id") != expected_pair_id:
+            raise ProvenanceError(f"frozen pair ID is not exactly {expected_pair_id}")
+        if run_pair.get("trace_id") != expected_trace_id or pair.get("trace_id") != expected_trace_id:
+            raise ProvenanceError(f"frozen pair {expected_pair_id} trace ID differs from run specification")
+        run_attempts, pair_attempts = run_pair.get("attempts"), pair.get("attempts")
+        if not isinstance(run_attempts, Sequence) or isinstance(run_attempts, (str, bytes)) or len(run_attempts) != 2:
+            raise ProvenanceError(f"frozen run-spec pair {expected_pair_id} lacks exactly A and B")
+        if not isinstance(pair_attempts, Sequence) or isinstance(pair_attempts, (str, bytes)) or len(pair_attempts) != 2:
+            raise ProvenanceError(f"frozen pair {expected_pair_id} lacks exactly A and B")
+        for side_index, side in enumerate(("A", "B")):
+            run_attempt, pair_attempt = run_attempts[side_index], pair_attempts[side_index]
+            if not isinstance(run_attempt, Mapping) or not isinstance(pair_attempt, Mapping):
+                raise ProvenanceError(f"frozen attempt {expected_pair_id}-{side} is malformed")
+            _validate_attempt_schedule_record(
+                run_attempt,
+                pair_id=expected_pair_id,
+                side=side,
+                ordinal=index * 2 + side_index,
+            )
+            _validate_attempt_schedule_record(
+                pair_attempt,
+                pair_id=expected_pair_id,
+                side=side,
+                ordinal=index * 2 + side_index,
+            )
+            if run_attempt.get("trace_id") != expected_trace_id or pair_attempt.get("trace_id") != expected_trace_id:
+                raise ProvenanceError(f"frozen attempt {expected_pair_id}-{side} trace ID differs")
+            attempt_id = str(pair_attempt["attempt_id"])
+            if attempt_id in seen_attempt_ids:
+                raise ProvenanceError(f"duplicate frozen attempt ID {attempt_id}")
+            seen_attempt_ids.add(attempt_id)
+    if seen_attempt_ids != {f"{pair_id}-{side}" for pair_id in EXPECTED_PAIR_IDS for side in ("A", "B")}:
+        raise ProvenanceError("frozen attempt ID set is incomplete")
+    if source_registry is not None:
+        trace = _trace_record(source_registry)
+        if str(trace.get("trace_id")) != str(expected_trace_id):
+            raise ProvenanceError("run specification trace ID is not the source registry trace")
+    if config is not None:
+        task = config.get("task")
+        if bool(config.get("strict_runtime_contract")) and task != TASK:
+            raise ProvenanceError("run specification task identity is not frozen")
 
 
 def _trace_record(registry: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -465,6 +809,41 @@ def _pid(value: Any) -> int | None:
     return result if result > 0 else None
 
 
+def _proc_start_identity(pid: int) -> str:
+    """Return a Linux process identity tied to ``/proc`` starttime and boot."""
+
+    stat_path = Path(f"/proc/{int(pid)}/stat")
+    try:
+        raw = stat_path.read_text(encoding="utf-8")
+        closing = raw.rfind(")")
+        if closing < 0:
+            raise ValueError("malformed /proc stat comm field")
+        fields = raw[closing + 1 :].split()
+        # The remainder starts at stat field 3 (state), so field 22
+        # (starttime) is offset 19 here.
+        starttime_ticks = fields[19]
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except (OSError, IndexError, ValueError) as exc:
+        raise ProtocolError(f"could not capture /proc identity for PID {pid}: {exc}") from exc
+    if not boot_id:
+        raise ProtocolError(f"/proc boot identity is empty for PID {pid}")
+    return f"pid={int(pid)};starttime_ticks={starttime_ticks};boot_id={boot_id}"
+
+
+_PROC_IDENTITY_RE = re.compile(
+    r"^pid=(?P<pid>[1-9][0-9]*);starttime_ticks=(?P<start>[1-9][0-9]*);boot_id=(?P<boot>[0-9a-fA-F-]{8,})$"
+)
+
+
+def _parse_proc_start_identity(value: Any) -> tuple[int, str, str] | None:
+    if not isinstance(value, str):
+        return None
+    match = _PROC_IDENTITY_RE.fullmatch(value)
+    if match is None:
+        return None
+    return int(match.group("pid")), match.group("start"), match.group("boot").lower()
+
+
 def _frozen_inputs(attempt: Mapping[str, Any]) -> Mapping[str, Any]:
     value = attempt.get("frozen_inputs")
     return value if isinstance(value, Mapping) else attempt
@@ -507,6 +886,44 @@ def _snapshot_contacts(snapshot: Any) -> tuple[tuple[str, str], ...]:
         pair = (str(left), str(right))
         result.add(tuple(sorted(pair)))
     return tuple(sorted(result))
+
+
+def _contact_records(snapshot: Any) -> tuple[tuple[str, str], ...]:
+    """Return actual named contact topology from the invariant snapshot."""
+
+    values = _invariants(snapshot).get("contacts", ())
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return ()
+    result: set[tuple[str, str]] = set()
+    for value in values:
+        if isinstance(value, Mapping):
+            left = value.get("geom1", value.get("first", value.get("a")))
+            right = value.get("geom2", value.get("second", value.get("b")))
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
+            left, right = value[0], value[1]
+        else:
+            continue
+        if left is None or right is None:
+            continue
+        result.add(tuple(sorted((str(left), str(right)))))
+    return tuple(sorted(result))
+
+
+def _object_identity_tokens(snapshot: Any) -> set[str]:
+    objects = _invariants(snapshot).get("objects", {})
+    if not isinstance(objects, Mapping):
+        return set()
+    tokens: set[str] = set()
+    for name, value in objects.items():
+        tokens.add(str(name).lower())
+        if isinstance(value, Mapping):
+            for field_name in ("name", "root_body", "body_name", "geom_name", "geom_names", "geoms"):
+                candidate = value.get(field_name)
+                if isinstance(candidate, str):
+                    tokens.add(candidate.lower())
+                elif isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes)):
+                    tokens.update(str(item).lower() for item in candidate)
+    return {token for token in tokens if token}
 
 
 def _terminal_semantics(attempt: Mapping[str, Any]) -> dict[str, Any]:
@@ -552,6 +969,71 @@ def _window_snapshots(window: Mapping[str, Any]) -> dict[int, Mapping[str, Any]]
     return dict(sorted(result.items()))
 
 
+def _validate_invariant_snapshot(
+    snapshot: Mapping[str, Any], *, required_roots: Sequence[str] = STRICT_INVARIANT_ROOTS
+) -> None:
+    invariants = snapshot.get("invariants") if isinstance(snapshot.get("invariants"), Mapping) else snapshot
+    if not isinstance(invariants, Mapping):
+        raise ProtocolError("invariant snapshot is not a mapping")
+    missing = [str(root) for root in required_roots if str(root) not in invariants]
+    if missing:
+        raise ProtocolError("invariant snapshot is missing required roots: " + ", ".join(missing))
+    predicates = invariants.get("predicates")
+    if not isinstance(predicates, Mapping) or not isinstance(predicates.get("available"), bool) or "goals" not in predicates:
+        raise ProtocolError("predicate invariant schema/labels are missing")
+    if not isinstance(invariants.get("success"), (bool, np.bool_)):
+        raise ProtocolError("success invariant must be boolean")
+    counters = invariants.get("counters")
+    if not isinstance(counters, Mapping):
+        raise ProtocolError("counter invariant schema is missing")
+    for field_name in ("done", "terminated", "truncated"):
+        if not isinstance(counters.get(field_name), (bool, np.bool_)):
+            raise ProtocolError(f"counter invariant {field_name} must be boolean")
+    contacts = invariants.get("contacts")
+    if not isinstance(contacts, Sequence) or isinstance(contacts, (str, bytes)):
+        raise ProtocolError("contact invariant schema is missing")
+    gripper = invariants.get("gripper")
+    if not isinstance(gripper, Mapping) or "current_action" not in gripper:
+        raise ProtocolError("discrete gripper current_action invariant is missing")
+    try:
+        action = np.asarray(gripper["current_action"])
+    except Exception as exc:
+        raise ProtocolError("discrete gripper current_action is not numeric") from exc
+    if action.dtype.kind not in {"b", "i", "u", "f"} or action.size == 0:
+        raise ProtocolError("discrete gripper current_action is not a non-empty numeric array")
+
+
+def _configured_invariant_roots(config: Mapping[str, Any]) -> tuple[str, ...]:
+    invariants = config.get("invariants")
+    if isinstance(invariants, Mapping) and isinstance(invariants.get("required_roots"), Sequence):
+        roots = tuple(str(root) for root in invariants["required_roots"])
+        if roots:
+            return roots
+    return STRICT_INVARIANT_ROOTS
+
+
+def _validate_terminal(
+    terminal: Mapping[str, Any], expected: Mapping[str, Any] | None = None
+) -> None:
+    missing = [field_name for field_name in TERMINAL_FIELDS if field_name not in terminal]
+    if missing:
+        raise ProtocolError("terminal is missing required fields: " + ", ".join(missing))
+    if isinstance(terminal["step"], bool) or int(terminal["step"]) <= 0:
+        raise ProtocolError("terminal.step must be a positive integer")
+    if not isinstance(terminal["termination_reason"], str) or not terminal["termination_reason"].strip():
+        raise ProtocolError("terminal termination_reason is required")
+    for field_name in ("success", "terminated", "truncated"):
+        if not isinstance(terminal[field_name], (bool, np.bool_)):
+            raise ProtocolError(f"terminal {field_name} must be boolean")
+    if expected is not None:
+        for field_name in TERMINAL_FIELDS:
+            if not _exact_equal(terminal[field_name], expected[field_name]):
+                raise ProtocolError(
+                    f"terminal {field_name} differs from frozen contract: "
+                    f"{terminal[field_name]!r} != {expected[field_name]!r}"
+                )
+
+
 def _numeric_leaves(value: Any, path: str = "") -> dict[str, np.ndarray]:
     result: dict[str, np.ndarray] = {}
     if isinstance(value, Mapping):
@@ -580,11 +1062,44 @@ def _numeric_leaves(value: Any, path: str = "") -> dict[str, np.ndarray]:
     return result
 
 
+def _contact_distance_leaves(value: Any, path: str = "contacts") -> dict[str, np.ndarray]:
+    """Extract contact distances without treating geometry labels as numbers.
+
+    Contact topology is a discrete exact field, while MuJoCo's signed contact
+    distance is a floating physical quantity.  The canonical invariant uses
+    ``(geom1, geom2, distance)`` tuples, but accepting named mappings here
+    keeps the quantity collector aligned with the official observation tree.
+    """
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return {}
+    result: dict[str, np.ndarray] = {}
+    for index, contact in enumerate(value):
+        distance: Any = None
+        if isinstance(contact, Mapping):
+            distance = contact.get("distance", contact.get("dist"))
+        elif isinstance(contact, Sequence) and not isinstance(contact, (str, bytes)) and len(contact) >= 3:
+            distance = contact[2]
+        if distance is None or isinstance(distance, (bool, np.bool_)):
+            continue
+        try:
+            numeric = np.asarray(distance, dtype=np.float64)
+        except (TypeError, ValueError):
+            continue
+        if numeric.shape != () or not np.all(np.isfinite(numeric)):
+            continue
+        result[f"{path}[{index}].distance"] = np.asarray([float(numeric)], dtype=np.float64)
+    return result
+
+
 def _selected_numeric_leaves(snapshot: Any, roots: Sequence[str]) -> dict[str, np.ndarray]:
     invariants = _invariants(snapshot)
     result: dict[str, np.ndarray] = {}
     for root in roots:
         if root not in invariants:
+            continue
+        if root == "contacts":
+            result.update(_contact_distance_leaves(invariants[root], root))
             continue
         for path, value in _numeric_leaves(invariants[root], root).items():
             result[path] = value
@@ -592,11 +1107,19 @@ def _selected_numeric_leaves(snapshot: Any, roots: Sequence[str]) -> dict[str, n
 
 
 def _actual_robot_object_contact(snapshot: Any) -> bool:
-    contacts = _snapshot_contacts(snapshot)
+    contacts = _contact_records(snapshot)
+    object_tokens = _object_identity_tokens(snapshot)
+    if not object_tokens:
+        return False
     for left, right in contacts:
-        text = f"{left} {right}".lower()
-        if any(token in text for token in ("robot", "finger", "gripper", "hand")) and any(
-            token in text for token in ("object", "target", "bowl", "cube", "geom")
+        left_text, right_text = left.lower(), right.lower()
+        object_side = next(
+            (side for side in (left_text, right_text) if any(token in side for token in object_tokens)),
+            None,
+        )
+        robot_side = right_text if object_side == left_text else left_text if object_side == right_text else None
+        if object_side is not None and robot_side is not None and any(
+            token in robot_side for token in ("robot", "finger", "gripper", "hand")
         ):
             return True
     return False
@@ -638,22 +1161,54 @@ def _object_positions(snapshot: Any) -> list[np.ndarray]:
     return result
 
 
+def _object_position_map(snapshot: Any) -> dict[str, np.ndarray]:
+    objects = _invariants(snapshot).get("objects", {})
+    if not isinstance(objects, Mapping):
+        return {}
+    result: dict[str, np.ndarray] = {}
+    for name, value in objects.items():
+        if not isinstance(value, Mapping):
+            continue
+        position = value.get("body_pos", value.get("position"))
+        if position is None:
+            continue
+        try:
+            array = np.asarray(position, dtype=np.float64).reshape(-1)
+        except Exception:
+            continue
+        if array.size and np.all(np.isfinite(array)):
+            result[str(name)] = array
+    return result
+
+
 def _object_motion(first: Any, current: Any) -> bool:
-    left = _object_positions(first)
-    right = _object_positions(current)
-    if len(left) != len(right):
+    left, right = _object_position_map(first), _object_position_map(current)
+    if set(left) != set(right):
         return False
-    return any(a.shape == b.shape and not np.array_equal(a, b) for a, b in zip(left, right))
+    return any(a.shape == right[name].shape and not np.array_equal(a, right[name]) for name, a in left.items())
 
 
-def _independent_evidence(regime: str, first: Any, current: Any, *, action: Any = None) -> dict[str, dict[str, Any]]:
-    contact = _actual_robot_object_contact(current)
+def _independent_evidence(
+    regime: str,
+    first: Any,
+    current: Any,
+    *,
+    action: Any = None,
+    history: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    frames = list(history or (first, current))
+    contacts = [_actual_robot_object_contact(frame) for frame in frames]
+    closes = [_close_command(frame, frame.get("action") if isinstance(frame, Mapping) else action) for frame in frames]
+    contact = bool(_actual_robot_object_contact(current))
     close = _close_command(current, action)
-    carried = _object_motion(first, current)
+    sustained = any(all(contacts[index : index + 2]) and all(closes[index : index + 2]) for index in range(max(0, len(frames) - 1)))
+    if len(frames) < 2:
+        sustained = False
+    carried = any(_object_motion(first, frame) for frame in frames[1:])
     source = "attempt_snapshots_and_frozen_actions"
     return {
-        "contact": {"present": contact, "source": source},
-        "grasp": {"present": bool(contact and close), "source": source},
+        "contact": {"present": contact, "source": source, "topology": list(_contact_records(current))},
+        "grasp": {"present": bool(contact and close and sustained), "source": source, "sustained": sustained},
         "carried": {"present": carried, "source": source},
     }
 
@@ -663,6 +1218,10 @@ def validate_pair(
     attempts: Mapping[str, Mapping[str, Any]],
     *,
     parent_pid: int | None = None,
+    expected_frozen_inputs: Mapping[str, Any] | None = None,
+    expected_terminal: Mapping[str, Any] | None = None,
+    expected_runtime_identity: Mapping[str, Any] | None = None,
+    strict: bool = False,
 ) -> PairValidation:
     """Validate one complete A/B pair without applying numeric null limits."""
 
@@ -670,6 +1229,8 @@ def validate_pair(
     reasons: list[str] = []
     if not pair_id:
         reasons.append("pair_id is missing")
+    elif pair_id not in EXPECTED_PAIR_IDS:
+        reasons.append(f"pair_id is outside the frozen schedule: {pair_id}")
     if not isinstance(attempts, Mapping) or not isinstance(attempts.get("A"), Mapping) or not isinstance(attempts.get("B"), Mapping):
         reasons.append("pair does not have exactly one A and one B attempt")
         return PairValidation(pair_id, None, False, tuple(reasons), {}, {"categorical_gate": False})
@@ -678,6 +1239,16 @@ def validate_pair(
     if set(str(key) for key in attempts) != {"A", "B"}:
         reasons.append("pair has unexpected attempt sides")
     for side, attempt in (("A", left), ("B", right)):
+        expected_attempt_id = f"{pair_id}-{side}"
+        if attempt.get("attempt_id") != expected_attempt_id:
+            reasons.append(
+                f"{side} attempt_id differs from frozen registry: "
+                f"{attempt.get('attempt_id')!r} != {expected_attempt_id!r}"
+            )
+        if attempt.get("pair_id") != pair_id:
+            reasons.append(f"{side} attempt pair_id differs from frozen pair: {attempt.get('pair_id')!r}")
+        if attempt.get("side") != side:
+            reasons.append(f"{side} attempt side field differs from frozen side")
         if attempt.get("status") != "completed":
             reasons.append(f"{side} attempt is not completed")
         pid = _pid(attempt.get("pid"))
@@ -687,9 +1258,39 @@ def validate_pair(
             reasons.append(f"{side} attempt PID is the parent PID")
         if _pid(attempt.get("ppid")) is None:
             reasons.append(f"{side} attempt has no positive PPID")
-        if not isinstance(attempt.get("process_start_identity"), str) or not attempt.get("process_start_identity"):
+        elif strict and parent_pid is not None and _pid(attempt.get("ppid")) != int(parent_pid):
+            reasons.append(f"{side} attempt PPID is not the launching parent PID")
+        process_identity = attempt.get("process_start_identity")
+        if not isinstance(process_identity, str) or not process_identity:
             reasons.append(f"{side} attempt lacks process-start identity")
+        elif strict:
+            if attempt.get("process_start_identity_source") != "/proc/<pid>/stat:starttime_ticks+boot_id":
+                reasons.append(f"{side} process-start identity source is not /proc")
+            parsed_identity = _parse_proc_start_identity(process_identity)
+            if parsed_identity is None:
+                reasons.append(f"{side} attempt lacks a real /proc process-start identity")
+            elif pid is None or parsed_identity[0] != pid:
+                reasons.append(f"{side} /proc identity PID does not match attempt PID")
+            elif _pid(attempt.get("ppid")) == pid:
+                reasons.append(f"{side} attempt PPID equals its own PID")
         protocol = _attempt_protocol(attempt)
+        if strict:
+            required_protocol = (
+                "construction_reset_count",
+                *FORBIDDEN_PROTOCOL_FIELDS,
+                "actions_executed",
+                "step_calls",
+                "render_calls",
+                "invariant_collections",
+            )
+            for field_name in required_protocol:
+                if field_name not in protocol:
+                    reasons.append(f"{side} observed protocol counter is missing: {field_name}")
+            for field_name in ("step_calls", "invariant_collections"):
+                if field_name in protocol and int(protocol[field_name]) != ACTION_SHAPE[0]:
+                    reasons.append(f"{side} did not observe exactly 82 {field_name}")
+            if "render_calls" in protocol and int(protocol["render_calls"]) != ACTION_SHAPE[0]:
+                reasons.append(f"{side} did not observe exactly 82 render_calls")
         for field_name in FORBIDDEN_PROTOCOL_FIELDS:
             value = protocol.get(field_name, 0)
             if value not in (0, False, None):
@@ -699,14 +1300,74 @@ def validate_pair(
         if "actions_executed" in protocol and int(protocol.get("actions_executed", -1)) != ACTION_SHAPE[0]:
             reasons.append(f"{side} did not execute exactly 82 actions")
         output_sha = attempt.get("output_sha256")
-        if output_sha is not None and output_sha != payload_sha256(attempt):
-            reasons.append(f"{side} output artifact hash is invalid")
+        artifact_sha = attempt.get("artifact_sha256")
+        if strict and not isinstance(output_sha, str):
+            reasons.append(f"{side} output payload SHA is missing")
+        if strict and not isinstance(artifact_sha, str):
+            reasons.append(f"{side} actual artifact SHA is missing")
+        if output_sha is not None:
+            if artifact_sha is not None:
+                artifact_path = attempt.get("artifact_path")
+                if artifact_path is None:
+                    reasons.append(f"{side} artifact path is missing for output SHA")
+                else:
+                    try:
+                        verify_artifact_hash(artifact_path, str(artifact_sha))
+                    except CalibrationError as exc:
+                        reasons.append(f"{side} output artifact hash is invalid: {exc}")
+                payload = dict(attempt)
+                for metadata_name in (
+                    "artifact_path",
+                    "artifact_sha256",
+                    "artifact_size",
+                    "artifact_integrity",
+                ):
+                    payload.pop(metadata_name, None)
+                try:
+                    if output_sha != payload_sha256(payload):
+                        reasons.append(f"{side} output payload hash is invalid")
+                except CalibrationError as exc:
+                    reasons.append(f"{side} output payload hash is invalid: {exc}")
+            elif output_sha != payload_sha256(attempt):
+                reasons.append(f"{side} output artifact hash is invalid")
     left_pid, right_pid = _pid(left.get("pid")), _pid(right.get("pid"))
     if left_pid is not None and right_pid is not None and left_pid == right_pid:
         reasons.append("A and B reuse the same process PID")
     left_start, right_start = left.get("process_start_identity"), right.get("process_start_identity")
     if left_start == right_start:
         reasons.append("A and B reuse the same process-start identity")
+
+    runtime_identities: dict[str, Mapping[str, Any]] = {}
+    if strict:
+        for side, attempt in (("A", left), ("B", right)):
+            runtime = attempt.get("runtime")
+            identity = runtime.get("identity") if isinstance(runtime, Mapping) else None
+            if not isinstance(identity, Mapping) or not identity:
+                reasons.append(f"{side} runtime identity facts are missing")
+                continue
+            runtime_identities[side] = identity
+            for name in ("python_executable", "runtime_lock", "facts", "expected_gl", "gl_identity"):
+                if name not in identity:
+                    reasons.append(f"{side} runtime identity field is missing: {name}")
+            expected_gl = identity.get("expected_gl")
+            live_gl = identity.get("gl_identity")
+            if not isinstance(expected_gl, Mapping) or not isinstance(live_gl, Mapping):
+                reasons.append(f"{side} live/frozen GL identity is missing")
+            elif not _exact_equal(expected_gl, live_gl):
+                reasons.append(f"{side} live GL identity differs from frozen GL identity")
+            runtime_python = runtime.get("python_executable") if isinstance(runtime, Mapping) else None
+            if runtime_python is not None and runtime_python != identity.get("python_executable"):
+                reasons.append(f"{side} runtime executable differs from its identity record")
+        if "A" in runtime_identities and "B" in runtime_identities:
+            if not _exact_equal(runtime_identities["A"], runtime_identities["B"]):
+                reasons.append("A and B runtime facts/GL identities differ")
+        if expected_runtime_identity is not None:
+            for side, identity in runtime_identities.items():
+                for name, expected in expected_runtime_identity.items():
+                    if name == "gl_identity":
+                        continue
+                    if name not in identity or not _exact_equal(identity[name], expected):
+                        reasons.append(f"{side} runtime identity {name} differs from the run contract")
 
     left_inputs, right_inputs = _frozen_inputs(left), _frozen_inputs(right)
     required_inputs = (
@@ -727,6 +1388,20 @@ def validate_pair(
             reasons.append(f"frozen input {name} differs between A and B")
         if name == "trace_id":
             trace_id = str(left_inputs[name])
+        if strict and name in {"physics_model_fingerprint", "observation_model_fingerprint"}:
+            if not isinstance(left_inputs[name], Mapping) or not left_inputs[name]:
+                reasons.append(f"frozen input {name} is empty")
+            if not isinstance(right_inputs[name], Mapping) or not right_inputs[name]:
+                reasons.append(f"frozen input {name} is empty on B")
+    if expected_frozen_inputs is not None:
+        for name, expected in expected_frozen_inputs.items():
+            if name not in left_inputs or name not in right_inputs:
+                reasons.append(f"frozen input {name} is missing from A or B")
+                continue
+            if not _exact_equal(left_inputs[name], expected):
+                reasons.append(f"A frozen input {name} differs from the run specification")
+            if not _exact_equal(right_inputs[name], expected):
+                reasons.append(f"B frozen input {name} differs from the run specification")
     # Some callers retain a human/source alias on the pair record while the
     # authoritative attempt carries the concrete episode ID.  Enforce the
     # pair-level identity when both attempts explicitly persist it, otherwise
@@ -751,6 +1426,7 @@ def validate_pair(
         "done_termination_exact": True,
         "terminal_timing_exact": True,
         "gripper_exact": True,
+        "action_exact": True,
         "regime_exact": set(left_windows) == set(right_windows),
         "divergences": [],
     }
@@ -794,6 +1470,32 @@ def validate_pair(
                 message = f"{regime}@{horizon} contact identity differs"
                 discrete["divergences"].append(message)
                 reasons.append(message)
+            if strict:
+                try:
+                    left_action = _snapshot_action(lsnap[horizon])
+                    right_action = _snapshot_action(rsnap[horizon])
+                except ProtocolError as exc:
+                    left_action = right_action = None
+                    discrete["action_exact"] = False
+                    discrete["categorical_gate"] = False
+                    reasons.append(f"{regime}@{horizon} action evidence is invalid: {exc}")
+                if (
+                    left_action is None
+                    or right_action is None
+                    or left_action.tobytes(order="C") != right_action.tobytes(order="C")
+                ):
+                    discrete["action_exact"] = False
+                    discrete["categorical_gate"] = False
+                    message = f"{regime}@{horizon} frozen action differs or is missing"
+                    discrete["divergences"].append(message)
+                    reasons.append(message)
+                expected_tape_sha = left_inputs.get("action_tape_sha256")
+                for side, window in (("A", lwindow), ("B", rwindow)):
+                    window_sha = window.get("action_sha256")
+                    if expected_tape_sha is None or str(window_sha).lower() != str(expected_tape_sha).lower():
+                        discrete["action_exact"] = False
+                        discrete["categorical_gate"] = False
+                        reasons.append(f"{side} {regime}@{horizon} action tape hash differs from frozen input")
             lgrip = li.get("gripper", {}) if isinstance(li.get("gripper"), Mapping) else {}
             rgrip = ri.get("gripper", {}) if isinstance(ri.get("gripper"), Mapping) else {}
             if not _exact_equal(lgrip.get("current_action"), rgrip.get("current_action")):
@@ -803,13 +1505,32 @@ def validate_pair(
                 discrete["divergences"].append(message)
                 reasons.append(message)
     left_terminal, right_terminal = _terminal_semantics(left), _terminal_semantics(right)
-    for name in ("step", "termination_reason", "success", "terminated", "truncated"):
+    if left.get("status") == "completed":
+        try:
+            _validate_terminal(left_terminal, expected_terminal)
+        except ProtocolError as exc:
+            reasons.append(f"A terminal contract is invalid: {exc}")
+    if right.get("status") == "completed":
+        try:
+            _validate_terminal(right_terminal, expected_terminal)
+        except ProtocolError as exc:
+            reasons.append(f"B terminal contract is invalid: {exc}")
+    for name in TERMINAL_FIELDS:
+        if left.get("status") == "completed" and name not in left_terminal:
+            reasons.append(f"A terminal {name} is missing")
+        if right.get("status") == "completed" and name not in right_terminal:
+            reasons.append(f"B terminal {name} is missing")
         if not _exact_equal(left_terminal.get(name), right_terminal.get(name)):
             discrete["terminal_timing_exact"] = False
             discrete["categorical_gate"] = False
             message = f"terminal {name} differs"
             discrete["divergences"].append(message)
             reasons.append(message)
+        if expected_terminal is not None:
+            if name not in left_terminal or not _exact_equal(left_terminal.get(name), expected_terminal.get(name)):
+                reasons.append(f"A terminal {name} differs from frozen registry contract")
+            if name not in right_terminal or not _exact_equal(right_terminal.get(name), expected_terminal.get(name)):
+                reasons.append(f"B terminal {name} differs from frozen registry contract")
     return PairValidation(
         pair_id,
         trace_id,
@@ -820,7 +1541,44 @@ def validate_pair(
     )
 
 
-def _runtime_fingerprint(adapter: Any, kind: str) -> dict[str, Any]:
+def _runtime_fingerprint(
+    adapter: Any, kind: str, *, config: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    strict = bool(config and config.get("strict_runtime_contract"))
+    # Strict calibration must fingerprint the concrete compiled model and the
+    # configured renderer through the canonical state-replay implementation.
+    # Adapter-provided convenience attributes are not an authoritative source
+    # because they may be synthetic or stale.
+    model = getattr(adapter, "model", None)
+    if strict:
+        if model is None:
+            raise ProtocolError(f"strict {kind} model fingerprint requires the compiled model")
+        try:
+            from scripts import m1_state_replay
+
+            if kind == "physics":
+                value = m1_state_replay.physics_model_fingerprint(
+                    model, getattr(adapter, "mujoco", None)
+                )
+            else:
+                runtime = config.get("runtime") if isinstance(config, Mapping) else None
+                renderer = runtime.get("renderer", {}) if isinstance(runtime, Mapping) else {}
+                value = m1_state_replay.observation_model_fingerprint(
+                    model,
+                    renderer if isinstance(renderer, Mapping) else {},
+                    getattr(adapter, "mujoco", None),
+                )
+        except Exception as exc:
+            raise ProtocolError(f"could not capture strict {kind} model fingerprint: {exc}") from exc
+        if not isinstance(value, Mapping) or not value:
+            raise ProtocolError(f"strict {kind} model fingerprint is empty")
+        required = ("kind", "hash", "fields")
+        if any(name not in value for name in required) or not value.get("fields"):
+            raise ProtocolError(f"strict {kind} model fingerprint lacks field evidence")
+        if str(value.get("kind")) != kind:
+            raise ProtocolError(f"strict {kind} model fingerprint kind is invalid")
+        return copy.deepcopy(dict(value))
+
     names = (f"{kind}_model_fingerprint", f"{kind}_fingerprint")
     for owner in (adapter, getattr(adapter, "inner", None), getattr(adapter, "model", None)):
         if owner is None:
@@ -833,8 +1591,154 @@ def _runtime_fingerprint(adapter: Any, kind: str) -> dict[str, Any]:
                 value = None
             if isinstance(value, Mapping) and value:
                 return copy.deepcopy(dict(value))
-    model = getattr(adapter, "model", None)
+    # This compatibility value is used only by the small non-strict test
+    # seam.  A strict run always takes the concrete model-fingerprint branch.
     return {"type": type(model).__name__ if model is not None else type(adapter).__name__}
+
+
+_RUNTIME_PROBE = r"""
+import importlib.metadata as metadata
+import json
+import platform
+import sys
+
+def version(*names):
+    for name in names:
+        try:
+            return metadata.version(name)
+        except Exception:
+            pass
+    return None
+
+try:
+    import mujoco
+    mujoco_version = getattr(mujoco, "__version__", None) or version("mujoco")
+except Exception:
+    mujoco_version = version("mujoco")
+try:
+    import torch
+    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+    cuda_available = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
+except Exception:
+    cuda_version = None
+    cuda_available = False
+print(json.dumps({
+    "python": platform.python_version(),
+    "numpy": version("numpy"),
+    "pytorch": version("torch"),
+    "transformers": version("transformers"),
+    "gymnasium": version("gymnasium"),
+    "lerobot": version("lerobot"),
+    "robosuite": version("robosuite"),
+    "hf_libero": version("hf-libero", "hf_libero"),
+    "mujoco": mujoco_version,
+    "cuda": str(cuda_version) if cuda_version else "none",
+    "cuda_available": cuda_available,
+    "gpu": "CPU" if not cuda_available and not cuda_version else "accelerator",
+}, sort_keys=True))
+"""
+
+
+def _adapter_gl_identity(adapter: Any) -> dict[str, str] | None:
+    for owner in (adapter, getattr(adapter, "inner", None), getattr(adapter, "env", None)):
+        value = getattr(owner, "gl_identity", None) if owner is not None else None
+        if isinstance(value, Mapping):
+            result = {str(key): str(item) for key, item in value.items()}
+            if all(result.get(key, "").strip() for key in ("vendor", "renderer", "version")):
+                return result
+    return None
+
+
+def _runtime_identity_audit(
+    config: Mapping[str, Any],
+    *,
+    adapter: Any | None = None,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the pinned interpreter/lock and capture live runtime facts."""
+
+    if not bool(config.get("strict_runtime_contract")):
+        return dict(previous or {})
+    runtime_config = _official_runtime_config(config)
+    paths = runtime_config.get("paths")
+    if not isinstance(paths, Mapping):
+        raise ProvenanceError("strict runtime has no pinned paths")
+    python_value = config.get("python", paths.get("cpu_python"))
+    if not isinstance(python_value, (str, Path)) or not str(python_value).strip():
+        raise ProvenanceError("strict runtime has no configured pinned python")
+    python_path = Path(str(python_value)).resolve()
+    locked_python = Path(str(paths.get("cpu_python", ""))).resolve()
+    if python_path != locked_python or not python_path.is_file() or not os.access(python_path, os.X_OK):
+        raise ProvenanceError(
+            f"configured python is not the frozen executable: {python_path} != {locked_python}"
+        )
+    lock_value = paths.get("runtime_lock")
+    lock_sha = paths.get("runtime_lock_sha256")
+    if not isinstance(lock_value, (str, Path)) or not isinstance(lock_sha, str):
+        raise ProvenanceError("strict runtime lock path/SHA is required")
+    lock_path = _resolve_path(lock_value)
+    actual_lock_sha = sha256_file(lock_path)
+    if actual_lock_sha.lower() != lock_sha.lower():
+        raise ProvenanceError("runtime lock SHA drift")
+    environment = runtime_config.get("runtime", {}).get("environment", {})
+    child_env = os.environ.copy()
+    if isinstance(environment, Mapping):
+        child_env.update(
+            {str(key): str(value) for key, value in environment.items() if str(key) != "empty_hf_cache"}
+        )
+    probe = subprocess.run(
+        [str(python_path), "-c", _RUNTIME_PROBE],
+        cwd=str(_ROOT),
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise ProvenanceError(
+            f"configured python runtime probe failed ({probe.returncode}): {probe.stderr[-1000:]}"
+        )
+    try:
+        facts = json.loads(str(probe.stdout).strip())
+    except json.JSONDecodeError as exc:
+        raise ProvenanceError("configured python runtime probe was not JSON") from exc
+    if not isinstance(facts, Mapping):
+        raise ProvenanceError("configured python runtime probe did not return a mapping")
+    pins = runtime_config.get("pins")
+    if not isinstance(pins, Mapping):
+        raise ProvenanceError("strict runtime pins are required")
+    mismatches = []
+    for key in ("python", "numpy", "pytorch", "transformers", "gymnasium", "lerobot", "robosuite", "hf_libero", "mujoco", "cuda", "gpu"):
+        if key not in pins:
+            mismatches.append(f"missing pin {key}")
+        elif str(facts.get(key)) != str(pins[key]):
+            mismatches.append(f"{key}: expected {pins[key]!r}, got {facts.get(key)!r}")
+    if mismatches:
+        raise ProvenanceError("configured runtime facts differ from frozen pins: " + "; ".join(mismatches))
+    identity: dict[str, Any] = {
+        "python_executable": str(python_path),
+        "runtime_lock": {"path": str(lock_path), "sha256": actual_lock_sha},
+        "facts": dict(facts),
+        "environment": {str(key): str(value) for key, value in environment.items()},
+        "expected_gl": copy.deepcopy(
+            runtime_config.get("runtime", {}).get("renderer", {}).get("expected_gl", {})
+            if isinstance(runtime_config.get("runtime"), Mapping)
+            and isinstance(runtime_config.get("runtime", {}).get("renderer"), Mapping)
+            else {}
+        ),
+    }
+    if adapter is not None:
+        gl = _adapter_gl_identity(adapter)
+        expected_gl = identity["expected_gl"]
+        if not isinstance(expected_gl, Mapping) or not expected_gl:
+            raise ProvenanceError("strict runtime expected GL identity is missing")
+        if gl is None:
+            raise ProvenanceError("strict runtime did not capture live GL identity")
+        expected_gl = {str(key): str(value) for key, value in expected_gl.items()}
+        if gl != expected_gl:
+            raise ProvenanceError(f"live GL identity differs from frozen EGL identity: {gl!r} != {expected_gl!r}")
+        identity["gl_identity"] = gl
+    return identity
 
 
 def _step_parts(result: Any) -> tuple[Any, bool, bool, Mapping[str, Any]]:
@@ -876,6 +1780,57 @@ def _adapter_snapshot(adapter: Any) -> Mapping[str, Any]:
     return copy.deepcopy(dict(value))
 
 
+def _observation_metadata(value: Any) -> dict[str, Any]:
+    """Describe the complete observation tree recursively without pickle."""
+
+    arrays: dict[str, dict[str, Any]] = {}
+
+    def visit(node: Any, path: str) -> dict[str, Any]:
+        if isinstance(node, Mapping):
+            children: dict[str, Any] = {}
+            for key, child in node.items():
+                if type(key) is not str:
+                    raise ProtocolError("official observation mapping keys must be strings")
+                child_path = f"{path}.{key}" if path else key
+                children[key] = visit(child, child_path)
+            return {"kind": "mapping", "keys": list(children), "children": children}
+        if isinstance(node, np.ndarray):
+            if node.dtype.kind == "O":
+                raise ProtocolError("official observation tree contains an object array")
+            array = np.ascontiguousarray(node)
+            if array.dtype.kind in {"f", "c"} and not np.all(np.isfinite(array)):
+                raise ProtocolError("official observation tree contains non-finite values")
+            metadata = {
+                "dtype": array.dtype.str,
+                "shape": list(array.shape),
+                "sha256": sha256_bytes(array.tobytes(order="C")),
+            }
+            arrays[path] = metadata
+            return {"kind": "array", **metadata}
+        if isinstance(node, (list, tuple)):
+            children = [visit(child, f"{path}[{index}]") for index, child in enumerate(node)]
+            return {
+                "kind": "tuple" if isinstance(node, tuple) else "list",
+                "length": len(children),
+                "children": children,
+            }
+        if isinstance(node, (bool, np.bool_)):
+            return {"kind": "scalar", "dtype": "bool"}
+        if isinstance(node, (int, np.integer)):
+            return {"kind": "scalar", "dtype": "int"}
+        if isinstance(node, (float, np.floating)):
+            if not math.isfinite(float(node)):
+                raise ProtocolError("official observation scalar is non-finite")
+            return {"kind": "scalar", "dtype": "float"}
+        if node is None or isinstance(node, str):
+            return {"kind": "scalar", "dtype": "none" if node is None else "str"}
+        raise ProtocolError(f"unsupported official observation node: {type(node).__name__}")
+
+    if value is None:
+        raise ProtocolError("official observation is missing")
+    return {"schema_version": 1, "tree": visit(value, ""), "arrays": arrays}
+
+
 def _adapter_rgb(adapter: Any) -> np.ndarray | None:
     renderer = getattr(adapter, "render_rgb", None)
     if not callable(renderer):
@@ -903,7 +1858,72 @@ def _terminal_success(adapter: Any, info: Mapping[str, Any]) -> bool:
     return bool(value) if isinstance(value, (bool, np.bool_)) else False
 
 
+def _adapter_counter(adapter: Any, field_name: str, *aliases: str) -> tuple[Any, str]:
+    for owner in (adapter, getattr(adapter, "inner", None), getattr(adapter, "env", None)):
+        if owner is None:
+            continue
+        for name in (field_name, *aliases):
+            value = getattr(owner, name, None)
+            if value is not None and not callable(value):
+                return value, f"{type(owner).__name__}.{name}"
+    counters = getattr(adapter, "protocol_counters", None)
+    if isinstance(counters, Mapping):
+        for name in (field_name, *aliases):
+            if name in counters:
+                return counters[name], f"protocol_counters.{name}"
+    return None, "unavailable"
+
+
+def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step: int) -> dict[str, Any]:
+    """Publish counters from the adapter or directly measured protocol calls."""
+
+    values: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    fields = {
+        "construction_reset_count": ("construction_reset_count",),
+        "restore_count": ("restore_count",),
+        "capture_count": ("capture_count",),
+        "policy_calls": ("policy_calls",),
+        "processor_calls": ("processor_calls", "processors_calls"),
+        "retry_count": ("retry_count",),
+        "post_terminal_steps": ("post_terminal_steps",),
+    }
+    for field_name, aliases in fields.items():
+        value, source = _adapter_counter(adapter, field_name, *aliases)
+        if value is None:
+            if field_name == "construction_reset_count":
+                value = int(bool(getattr(adapter, "_construction_reset_done", False)))
+                source = "RuntimeAdapter._construction_reset_done"
+            elif field_name == "post_terminal_steps":
+                value = int(observed.get(field_name, 0))
+                source = "measured_protocol_calls"
+            else:
+                # These operations have no call site in this protocol.  Keep
+                # the measured zero explicit and identify its source rather
+                # than fabricating a runtime counter value.
+                value = 0
+                source = "null_protocol_call_site_audit"
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ProtocolError(f"protocol counter {field_name} is not an integer") from exc
+        if value < 0:
+            raise ProtocolError(f"protocol counter {field_name} is negative")
+        values[field_name] = value
+        sources[field_name] = source
+    values["actions_executed"] = int(observed.get("actions_executed", terminal_step))
+    values["step_calls"] = int(observed.get("step_calls", values["actions_executed"]))
+    values["render_calls"] = int(observed.get("render_calls", 0))
+    values["invariant_collections"] = int(observed.get("invariant_collections", 0))
+    values["counter_sources"] = sources
+    return values
+
+
 def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict[str, Any]:
+    try:
+        identity = _proc_start_identity(os.getpid())
+    except Exception:
+        identity = None
     protocol = {
         "construction_reset_count": 0,
         "restore_count": 0,
@@ -920,6 +1940,9 @@ def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict
         "side": attempt.get("side"),
         "status": "failed",
         "error": f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error),
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "process_start_identity": identity,
         "protocol": protocol,
     }
 
@@ -934,6 +1957,11 @@ def execute_attempt(
     adapter: Any = None
     actions: np.ndarray
     try:
+        config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
+        strict = bool(config.get("strict_runtime_contract"))
+        expected_attempt_id = f"{attempt.get('pair_id')}-{attempt.get('side')}"
+        if attempt.get("attempt_id") != expected_attempt_id:
+            raise ProtocolError("worker attempt ID does not match frozen pair/side")
         tape_value = attempt.get("tape")
         if tape_value is None:
             tape_path = attempt.get("tape_path")
@@ -944,11 +1972,26 @@ def execute_attempt(
         if actions.dtype != ACTION_DTYPE or tuple(actions.shape) != ACTION_SHAPE or not np.all(np.isfinite(actions)):
             raise ProtocolError("worker tape is not exact finite float32 (82, 7)")
         actions = np.ascontiguousarray(actions)
-        config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
+        actual_tape_sha = sha256_bytes(actions.tobytes(order="C"))
+        expected_tape_sha = attempt.get("action_tape_sha256")
+        if expected_tape_sha is None and isinstance(config.get("action_tape"), Mapping):
+            expected_tape_sha = config["action_tape"].get("sha256")
+        if expected_tape_sha is not None and str(expected_tape_sha).lower() != actual_tape_sha.lower():
+            raise ProtocolError("worker action tape hash differs from frozen registry")
+        if strict:
+            _strict_task(config.get("task"), field_name="task")
+            _runtime_identity_audit(config)
         adapter = adapter_factory(config) if adapter_factory is not None else _construct_adapter(config)
         windows = _window_map_from_registry(attempt)
         timeline: dict[int, dict[str, Any]] = {}
         terminal: dict[str, Any] | None = None
+        observed: dict[str, int] = {
+            "actions_executed": 0,
+            "step_calls": 0,
+            "render_calls": 0,
+            "invariant_collections": 0,
+            "post_terminal_steps": 0,
+        }
         for index, action in enumerate(actions):
             if terminal is not None:
                 raise ProtocolError("post-terminal action was submitted")
@@ -956,14 +1999,27 @@ def execute_attempt(
             if not callable(result):
                 raise ProtocolError("fresh adapter does not expose step()")
             step_result = result(np.asarray(action, dtype=ACTION_DTYPE).copy())
+            observed["step_calls"] += 1
+            observed["actions_executed"] += 1
             step = index + 1
             observation, terminated, truncated, info = _step_parts(step_result)
             invariant = _adapter_snapshot(adapter)
+            observed["invariant_collections"] += 1
+            if strict:
+                _validate_invariant_snapshot(invariant, required_roots=_configured_invariant_roots(config))
+            observation_metadata = _observation_metadata(observation)
+            if strict and not observation_metadata["arrays"]:
+                raise ProtocolError("strict official observation tree has no array leaves")
+            renderer = getattr(adapter, "render_rgb", None)
+            if callable(renderer):
+                observed["render_calls"] += 1
             rgb = _adapter_rgb(adapter)
             timeline[step] = {
                 "invariants": invariant,
                 "raw_observation": observation,
+                "observation_metadata": observation_metadata,
                 "renderer": rgb,
+                "action": np.asarray(action, dtype=ACTION_DTYPE).copy(),
             }
             if terminated or truncated:
                 reason = info.get("termination_reason", info.get("terminal_reason"))
@@ -980,37 +2036,31 @@ def execute_attempt(
             raise ProtocolError("frozen trace did not terminate legally at step 82")
         if int(terminal["step"]) != ACTION_SHAPE[0]:
             raise ProtocolError(f"frozen trace terminated at unexpected step {terminal['step']}")
+        expected_terminal = attempt.get("terminal_contract")
+        if expected_terminal is None and isinstance(config.get("terminal_contract"), Mapping):
+            expected_terminal = config["terminal_contract"]
+        _validate_terminal(terminal, expected_terminal if isinstance(expected_terminal, Mapping) else None)
         output_windows: dict[str, Any] = {}
         for window in windows:
             offset = int(window["capture_offset"])
             horizon = int(window["continuation_horizon"])
             snapshots: dict[str, Any] = {}
-            for regime in window["regimes"]:
-                for relative in range(horizon + 1):
-                    absolute = offset + relative
-                    if absolute not in timeline:
-                        raise ProtocolError(f"missing frozen window coordinate {regime}@{relative}")
-                    snapshots[str(relative)] = timeline[absolute]
-                output_windows[str(window["window_id"])] = {
-                    "window_id": str(window["window_id"]),
-                    "regimes": list(window["regimes"]),
-                    "capture_offset": offset,
-                    "continuation_horizon": horizon,
-                    "snapshots": snapshots,
-                    "action_sha256": sha256_bytes(actions.tobytes(order="C")),
-                }
-                break
-        reset_count = 1
-        protocol = {
-            "construction_reset_count": reset_count,
-            "restore_count": 0,
-            "capture_count": 0,
-            "policy_calls": 0,
-            "processor_calls": 0,
-            "retry_count": 0,
-            "post_terminal_steps": 0,
-            "actions_executed": int(terminal["step"]),
-        }
+            for relative in range(horizon + 1):
+                absolute = offset + relative
+                if absolute not in timeline:
+                    raise ProtocolError(f"missing frozen window coordinate {window['window_id']}@{relative}")
+                snapshots[str(relative)] = timeline[absolute]
+            output_windows[str(window["window_id"])] = {
+                "window_id": str(window["window_id"]),
+                "regimes": list(window["regimes"]),
+                "capture_offset": offset,
+                "continuation_horizon": horizon,
+                "snapshots": snapshots,
+                "action_sha256": actual_tape_sha,
+            }
+        runtime_identity = _runtime_identity_audit(config, adapter=adapter) if strict else {}
+        process_identity = _proc_start_identity(os.getpid())
+        protocol = _protocol_counters(adapter, observed, int(terminal["step"]))
         result = {
             "attempt_id": attempt.get("attempt_id"),
             "pair_id": attempt.get("pair_id"),
@@ -1018,21 +2068,37 @@ def execute_attempt(
             "status": "completed",
             "pid": os.getpid(),
             "ppid": os.getppid(),
-            "process_start_identity": f"pid={os.getpid()}:start={time.monotonic_ns()}",
+            "process_start_identity": process_identity,
+            "process_start_identity_source": "/proc/<pid>/stat:starttime_ticks+boot_id",
             "frozen_inputs": {
                 "trace_id": attempt.get("trace_id"),
                 "task": dict(config.get("task", TASK)) if isinstance(config.get("task", TASK), Mapping) else dict(TASK),
-                "action_tape_sha256": sha256_bytes(actions.tobytes(order="C")),
+                "action_tape_sha256": actual_tape_sha,
                 "action_shape": list(ACTION_SHAPE),
                 "action_dtype": "float32",
-                "physics_model_fingerprint": _runtime_fingerprint(adapter, "physics"),
-                "observation_model_fingerprint": _runtime_fingerprint(adapter, "observation"),
+                "physics_model_fingerprint": _runtime_fingerprint(adapter, "physics", config=config),
+                "observation_model_fingerprint": _runtime_fingerprint(adapter, "observation", config=config),
             },
             "windows": output_windows,
             "terminal": terminal,
             "protocol": protocol,
-            "runtime": {"python": sys.version.split()[0], "pid": os.getpid(), "ppid": os.getppid()},
+            "runtime": {
+                "python": sys.version.split()[0],
+                "python_executable": sys.executable,
+                "pid": os.getpid(),
+                "ppid": os.getppid(),
+                "process_start_identity": process_identity,
+                "identity_source": "/proc/<pid>/stat:starttime_ticks+boot_id",
+                "identity": runtime_identity,
+            },
         }
+        if strict:
+            expected_runtime = attempt.get("runtime_identity_contract")
+            if isinstance(expected_runtime, Mapping):
+                expected_facts = expected_runtime.get("facts")
+                actual_facts = runtime_identity.get("facts")
+                if not _exact_equal(expected_facts, actual_facts):
+                    raise ProtocolError("worker runtime facts differ from frozen runtime contract")
         result["output_sha256"] = payload_sha256(result)
         return result
     except Exception as exc:
@@ -1070,10 +2136,13 @@ def _construct_adapter(config: Mapping[str, Any]) -> Any:
 
     from scripts import m1_state_replay
 
-    runtime = m1_state_replay.build_official_runtime(config)
+    construction_config = _official_runtime_config(config)
+    runtime = m1_state_replay.build_official_runtime(construction_config)
     if callable(getattr(runtime, "step", None)):
         return runtime
-    return m1_state_replay.RuntimeAdapter.construct_fresh(config, runtime_builder=lambda _config: runtime)
+    return m1_state_replay.RuntimeAdapter.construct_fresh(
+        construction_config, runtime_builder=lambda _config: runtime
+    )
 
 
 def _prepare_attempt(prepared: PreparedRun, pair: Mapping[str, Any], side: str) -> dict[str, Any]:
@@ -1086,6 +2155,14 @@ def _prepare_attempt(prepared: PreparedRun, pair: Mapping[str, Any], side: str) 
         "registry_path": str(prepared.source_registry_path),
         "trace_id": pair["trace_id"],
         "tape_path": str(_tape_path(prepared.source_registry, pair["trace_id"])),
+        "action_tape_sha256": prepared.run_spec["action_tape"]["sha256"],
+        "terminal_contract": copy.deepcopy(prepared.run_spec.get("terminal_contract", {})),
+        "runtime_identity_contract": copy.deepcopy(prepared.run_spec.get("runtime_identity_contract", {})),
+        "expected_registry_sha256": prepared.run_spec["registry_sha256"],
+        "expected_run_spec_sha256": prepared.run_spec["run_spec_sha256"],
+        "python": prepared.run_spec["python"],
+        "output_root": prepared.run_spec["output_root"],
+        "parent_pid": os.getpid(),
     }
 
 
@@ -1099,23 +2176,39 @@ def _tape_path(registry: Mapping[str, Any], trace_id: str) -> Path:
 
 def _verify_prepared(prepared: PreparedRun) -> tuple[dict[str, Any], dict[str, Any], np.ndarray]:
     current = load_config(prepared.config_path)
+    if not verify_self_hash(prepared.run_spec, "run_spec_sha256"):
+        raise ProvenanceError("run specification self-hash is invalid")
     computed = config_contract_sha256(current)
     if computed != str(prepared.run_spec.get("config_sha256", "")):
         raise ProvenanceError("config hash drift detected before worker launch")
     declared = current.get("config_sha256")
     if declared is not None and str(declared).lower() != computed.lower():
         raise ProvenanceError("config self-hash is invalid")
+    runtime_config = _official_runtime_config(current)
+    _validate_strict_null_config(current, runtime_config)
+    if bool(current.get("strict_runtime_contract")):
+        _strict_task(current.get("task"), field_name="task")
     registry_path = Path(prepared.run_spec["source_registry_path"])
     registry = _load_verified_registry(registry_path)
     _verify_registry_payload(registry, registry_path, str(prepared.run_spec["registry_sha256"]))
     pair_registry = _load_document(prepared.pair_registry_path)
-    if not verify_self_hash(pair_registry, "pair_registry_sha256"):
-        raise ProvenanceError("pair registry self-hash is invalid")
-    if pair_registry.get("run_spec_sha256") != prepared.run_spec.get("run_spec_sha256"):
-        raise ProvenanceError("pair registry does not belong to this run specification")
+    _validate_frozen_schedule(
+        prepared.run_spec,
+        pair_registry,
+        source_registry=registry,
+        config=current,
+    )
     trace = _trace_record(registry)
     trace_id = str(trace.get("trace_id"))
     tape, _ = _load_tape(registry, config=current, trace_id=trace_id)
+    if bool(current.get("strict_runtime_contract")):
+        _validate_trace_frozen_inputs(trace, sha256_bytes(tape.tobytes(order="C")))
+        expected_terminal = prepared.run_spec.get("terminal_contract")
+        if not isinstance(expected_terminal, Mapping):
+            raise ProvenanceError("run specification has no terminal contract")
+        _registry_terminal_contract(registry, trace, current)
+        if dict(expected_terminal) != _terminal_contract_from_config(current):
+            raise ProvenanceError("run specification terminal contract drifted")
     return current, pair_registry, tape
 
 
@@ -1128,6 +2221,7 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
     declared_config_sha = config.get("config_sha256")
     if declared_config_sha is not None and str(declared_config_sha).lower() != computed_config_sha.lower():
         raise ProvenanceError("config self-hash is invalid")
+    runtime_config = _official_runtime_config(config)
     if int(config.get("pair_count", PAIR_COUNT)) != PAIR_COUNT:
         raise ProvenanceError("pair_count is frozen at exactly 20")
     prefix = str(config.get("pair_prefix", PAIR_PREFIX))
@@ -1149,6 +2243,12 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
     trace_id = str(trace.get("trace_id"))
     tape, tape_sha = _load_tape(source_registry, config=config, trace_id=trace_id)
     windows = _windows(source_registry, trace)
+    _validate_strict_null_config(config, runtime_config)
+    if bool(config.get("strict_runtime_contract")):
+        _validate_trace_frozen_inputs(trace, tape_sha)
+        terminal_contract = _registry_terminal_contract(source_registry, trace, config)
+    else:
+        terminal_contract = _terminal_contract_from_config(config)
     output_value = config.get("output_root", "runs/m1_null_calibration/20260901_task000_init000_null20")
     output_root = _resolve_path(output_value)
     run_spec_path = output_root / "run_spec.json"
@@ -1184,9 +2284,12 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
         "pair_count": PAIR_COUNT,
         "pair_prefix": PAIR_PREFIX,
         "trace_id": trace_id,
-        "task": dict(TASK),
+        "task": dict(config.get("task", TASK)) if isinstance(config.get("task", TASK), Mapping) else dict(TASK),
         "action_tape": {"sha256": tape_sha, "shape": list(ACTION_SHAPE), "dtype": "float32"},
         "windows": windows,
+        "pairs": copy.deepcopy(pairs),
+        "terminal_contract": terminal_contract,
+        "python": str(config.get("python", sys.executable)),
         "runtime": {
             "include_policy": False,
             "call_policy": False,
@@ -1194,6 +2297,9 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
             "fresh_processes": True,
             "retry_count": 0,
         },
+        "obs_type": config.get("obs_type"),
+        "runtime_config": copy.deepcopy(runtime_config.get("runtime", {})),
+        "state_replay_config": copy.deepcopy(config.get("state_replay_config")),
         "pair_registry_path": str(pair_registry_path),
     }
     run_spec = {**run_spec_body, "run_spec_sha256": sha256_bytes(canonical_json(run_spec_body).encode("utf-8"))}
@@ -1206,6 +2312,7 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
         "source_registry_path": str(source_registry_path),
         "registry_sha256": str(source_registry["registry_sha256"]),
         "action_tape": run_spec["action_tape"],
+        "terminal_contract": terminal_contract,
         "pair_count": PAIR_COUNT,
         "pairs": pairs,
     }
@@ -1213,6 +2320,7 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
         **pair_registry_body,
         "pair_registry_sha256": sha256_bytes(canonical_json(pair_registry_body).encode("utf-8")),
     }
+    _validate_frozen_schedule(run_spec, pair_registry, source_registry=source_registry, config=config)
     write_json_atomic(pair_registry_path, pair_registry)
     return PreparedRun(
         config_target,
@@ -1250,11 +2358,37 @@ def _normalise_process_result(value: Any) -> dict[str, Any]:
     return {"status": "failed", "error": f"unsupported process result: {type(value).__name__}"}
 
 
+def _bind_worker_result(result: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
+    """Reject worker output that cannot be bound to its frozen attempt slot."""
+
+    expected = {
+        "attempt_id": request.get("attempt_id"),
+        "pair_id": request.get("pair_id"),
+        "side": request.get("side"),
+    }
+    mismatches = [
+        f"{name}={result.get(name)!r} expected {value!r}"
+        for name, value in expected.items()
+        if result.get(name) is not None and result.get(name) != value
+    ]
+    if mismatches:
+        failure = _attempt_failure(request, ProtocolError("worker identity mismatch: " + "; ".join(mismatches)))
+        failure["worker_result"] = copy.deepcopy(dict(result))
+        return failure
+    bound = copy.deepcopy(dict(result))
+    for name, value in expected.items():
+        bound[name] = value
+    return bound
+
+
 def _default_process_runner(attempt: Mapping[str, Any]) -> dict[str, Any]:
     job_dir = _resolve_path(attempt.get("output_root", "runs/m1_null_calibration")) / "jobs"
     job_path = job_dir / f"{attempt['attempt_id']}.json"
     write_json_atomic(job_path, dict(attempt))
-    command = [sys.executable, str(Path(__file__).resolve()), "--worker", "--job", str(job_path)]
+    configured_python = attempt.get("python")
+    if not isinstance(configured_python, str) or not configured_python.strip():
+        configured_python = sys.executable
+    command = [configured_python, str(Path(__file__).resolve()), "--worker", "--job", str(job_path)]
     completed = subprocess.run(command, cwd=str(_ROOT), capture_output=True, text=True, check=False)
     return _normalise_process_result(completed)
 
@@ -1276,6 +2410,15 @@ def run_calibration(
         raise ProvenanceError("pair registry does not contain exactly 20 pairs")
     runner = process_runner or _default_process_runner
     output_root = _resolve_path(prepared.run_spec["output_root"])
+    strict = bool(config.get("strict_runtime_contract"))
+    runtime_identity_contract = _runtime_identity_audit(config) if strict else {}
+    expected_frozen_inputs = {
+        "trace_id": prepared.run_spec["trace_id"],
+        "task": copy.deepcopy(prepared.run_spec["task"]),
+        "action_tape_sha256": prepared.run_spec["action_tape"]["sha256"],
+        "action_shape": list(ACTION_SHAPE),
+        "action_dtype": "float32",
+    }
     attempts: list[dict[str, Any]] = []
     by_pair: dict[str, dict[str, Mapping[str, Any]]] = {}
     for pair in pairs:
@@ -1284,26 +2427,46 @@ def run_calibration(
         pair_id = str(pair["pair_id"])
         for side in ("A", "B"):
             request = _prepare_attempt(prepared, pair, side)
+            if strict:
+                request["runtime_identity_contract"] = copy.deepcopy(runtime_identity_contract)
             try:
-                result = _normalise_process_result(runner(request))
+                result = _bind_worker_result(_normalise_process_result(runner(request)), request)
                 if result.get("status") is None:
                     result["status"] = "completed" if result.get("terminal") else "failed"
-                result.setdefault("attempt_id", request["attempt_id"])
-                result.setdefault("pair_id", pair_id)
-                result.setdefault("side", side)
                 if result.get("status") == "completed" and "output_sha256" not in result:
                     result["output_sha256"] = payload_sha256(result)
             except Exception as exc:
                 result = _attempt_failure(request, exc)
                 result.update({"attempt_id": request["attempt_id"], "pair_id": pair_id, "side": side})
+            artifact_path = _attempt_artifact_path(prepared, str(request["attempt_id"]))
+            artifact_record = write_json_atomic(artifact_path, result)
+            result = {
+                **result,
+                "artifact_path": str(artifact_path),
+                "artifact_sha256": artifact_record["sha256"],
+                "artifact_size": artifact_record["size"],
+                "artifact_integrity": {
+                    "verified": verify_artifact_hash(artifact_path, artifact_record["sha256"]),
+                    "hash_domain": "canonical_json_bytes_with_trailing_newline",
+                },
+            }
             attempts.append(result)
             by_pair.setdefault(pair_id, {})[side] = result
-            write_json_atomic(_attempt_artifact_path(prepared, str(request["attempt_id"])), result)
     parent_pid = os.getpid()
     validations: list[PairValidation] = []
     for pair in pairs:
         pair_id = str(pair["pair_id"])
-        validations.append(validate_pair(pair, by_pair.get(pair_id, {}), parent_pid=parent_pid))
+        validations.append(
+            validate_pair(
+                pair,
+                by_pair.get(pair_id, {}),
+                parent_pid=parent_pid,
+                expected_frozen_inputs=expected_frozen_inputs,
+                expected_terminal=prepared.run_spec.get("terminal_contract"),
+                expected_runtime_identity=runtime_identity_contract if strict else None,
+                strict=strict,
+            )
+        )
     complete_validations = [item for item in validations if item.valid]
     candidate_valid_count = len(complete_validations)
     valid_count = candidate_valid_count if candidate_valid_count == PAIR_COUNT else 0
@@ -1353,8 +2516,47 @@ def run_calibration(
             result["status"] = "PASS" if all(result["gates"].values()) else "BLOCKED"
         except Exception as exc:
             result["errors"].append(f"envelope construction failed: {type(exc).__name__}: {exc}")
+    final_pair_registry_path = output_root / "final_pair_registry.json"
+    final_pairs = []
+    for pair, validation in zip(pairs, validations):
+        pair_id = str(pair["pair_id"])
+        final_pairs.append(
+            {
+                "pair_id": pair_id,
+                "trace_id": pair.get("trace_id"),
+                "attempts": [
+                    copy.deepcopy(by_pair.get(pair_id, {}).get(side, {"attempt_id": f"{pair_id}-{side}", "side": side, "status": "missing"}))
+                    for side in ("A", "B")
+                ],
+                "validation": validation.to_dict(),
+            }
+        )
+    final_registry_body = {
+        "schema_version": SCHEMA_VERSION,
+        "registry_type": "m1_null_calibration_final_pair_registry",
+        "run_spec_path": str(prepared.run_spec_path),
+        "run_spec_sha256": prepared.run_spec["run_spec_sha256"],
+        "pair_registry_path": str(prepared.pair_registry_path),
+        "pair_registry_sha256": pair_registry["pair_registry_sha256"],
+        "pair_count": PAIR_COUNT,
+        "attempt_count": PAIR_COUNT * 2,
+        "pairs": final_pairs,
+    }
+    final_pair_registry = {
+        **final_registry_body,
+        "final_pair_registry_sha256": sha256_bytes(canonical_json(final_registry_body).encode("utf-8")),
+    }
+    write_json_atomic(final_pair_registry_path, final_pair_registry)
     pair_measurement_path = output_root / "pair_measurements.json"
-    write_json_atomic(pair_measurement_path, {"schema_version": SCHEMA_VERSION, "pairs": result["pair_results"]})
+    write_json_atomic(
+        pair_measurement_path,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "final_pair_registry_sha256": final_pair_registry["final_pair_registry_sha256"],
+            "pairs": result["pair_results"],
+            "attempts": attempts,
+        },
+    )
     result["pair_measurements_path"] = str(pair_measurement_path)
     terminal_body = {
         "schema_version": SCHEMA_VERSION,
@@ -1364,10 +2566,22 @@ def run_calibration(
         "run_spec_sha256": prepared.run_spec["run_spec_sha256"],
         "pair_registry_path": str(prepared.pair_registry_path),
         "pair_registry_sha256": pair_registry["pair_registry_sha256"],
+        "final_pair_registry_path": str(final_pair_registry_path),
+        "final_pair_registry_sha256": final_pair_registry["final_pair_registry_sha256"],
         "counts": result["counts"],
         "gates": result["gates"],
         "errors": result["errors"],
-        "artifacts": {"pair_measurements": str(pair_measurement_path), **envelope_paths},
+        "artifacts": {
+            "run_spec": {"path": str(prepared.run_spec_path), "sha256": sha256_file(prepared.run_spec_path)},
+            "pair_registry": {"path": str(prepared.pair_registry_path), "sha256": sha256_file(prepared.pair_registry_path)},
+            "final_pair_registry": {"path": str(final_pair_registry_path), "sha256": sha256_file(final_pair_registry_path)},
+            "attempts": [
+                {"attempt_id": item["attempt_id"], "path": item["artifact_path"], "sha256": item["artifact_sha256"]}
+                for item in attempts
+            ],
+            "pair_measurements": {"path": str(pair_measurement_path), "sha256": sha256_file(pair_measurement_path)},
+            **{name: {"path": path, "sha256": sha256_file(path)} for name, path in envelope_paths.items()},
+        },
     }
     terminal = {**terminal_body, "terminal_manifest_sha256": sha256_bytes(canonical_json(terminal_body).encode("utf-8"))}
     terminal_path = output_root / "terminal_manifest.json"
@@ -1376,7 +2590,15 @@ def run_calibration(
     return result
 
 
-def _attempt_control_pair(left: Mapping[str, Any], right: Mapping[str, Any]) -> list[Any]:
+def _attempt_control_pair(
+    left: Mapping[str, Any], right: Mapping[str, Any], *, left_action: Any = None, right_action: Any = None, strict: bool = False
+) -> list[Any]:
+    if left_action is not None and right_action is not None:
+        controls = [np.asarray(left_action), np.asarray(right_action)]
+        for control in controls:
+            if control.dtype != ACTION_DTYPE or control.shape != (7,) or not np.all(np.isfinite(control)):
+                raise NullCalibrationError("renderer controls must be exact finite float32 actions")
+        return controls
     for key in ("duplicate_controls", "controls", "control_tape"):
         lvalue, rvalue = left.get(key), right.get(key)
         if isinstance(lvalue, Mapping) and isinstance(rvalue, Mapping):
@@ -1384,25 +2606,48 @@ def _attempt_control_pair(left: Mapping[str, Any], right: Mapping[str, Any]) -> 
                 return [lvalue["A"], rvalue["B"]]
         if lvalue is not None and rvalue is not None:
             return [lvalue, rvalue]
+    if strict:
+        raise NullCalibrationError("renderer sample lacks actual frozen controls")
     return [np.asarray([0], dtype=np.float32), np.asarray([0], dtype=np.float32)]
 
 
-def _renderer_images(snapshot: Mapping[str, Any]) -> dict[str, np.ndarray]:
+def _snapshot_action(snapshot: Mapping[str, Any]) -> np.ndarray | None:
+    value = snapshot.get("action")
+    if value is None:
+        return None
+    array = np.asarray(value)
+    if array.dtype != ACTION_DTYPE or array.shape != (7,):
+        raise ProtocolError("window action is not exact float32 shape (7,)")
+    return np.ascontiguousarray(array).copy()
+
+
+def _renderer_images(
+    snapshot: Mapping[str, Any], *, camera: str = DEFAULT_CAMERA, configured_key: str = DEFAULT_RENDER_KEY
+) -> dict[str, np.ndarray]:
     result: dict[str, np.ndarray] = {}
     direct = snapshot.get("renderer")
     if direct is not None:
         value = np.asarray(direct)
-        if value.dtype == np.dtype("uint8") and value.ndim >= 2:
-            result[DEFAULT_RENDER_KEY] = np.ascontiguousarray(value)
+        if value.dtype != np.dtype("uint8") or value.ndim < 2 or value.size == 0:
+            raise NullCalibrationError("direct renderer output is not a non-empty uint8 image")
+        result[str(configured_key)] = np.ascontiguousarray(value)
     raw = snapshot.get("raw_observation")
-    if isinstance(raw, Mapping):
-        for key, value in raw.items():
-            try:
-                array = np.asarray(value)
-            except Exception:
-                continue
-            if array.dtype == np.dtype("uint8") and array.ndim >= 2 and array.size:
-                result[str(key)] = np.ascontiguousarray(array)
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                visit(child, f"{path}.{key}" if path else str(key))
+            return
+        if isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+            return
+        try:
+            array = np.asarray(value)
+        except Exception:
+            return
+        if array.dtype == np.dtype("uint8") and array.ndim >= 2 and array.size:
+            result[path] = np.ascontiguousarray(array)
+    visit(raw, "")
     return result
 
 
@@ -1423,6 +2668,8 @@ def build_envelopes(
         raise NullCalibrationError("pair envelope input IDs do not match the frozen 20-pair schedule")
     if any(not by_id[pair_id].valid for pair_id in required):
         raise NullCalibrationError("invalid or semantically divergent pair cannot enter envelope aggregation")
+    strict_contract = bool(config and config.get("strict_runtime_contract"))
+    required_invariant_roots = _configured_invariant_roots(config or {}) if strict_contract else ()
     roots = DEFAULT_QUANTITY_ROOTS
     if isinstance(config, Mapping):
         selection = config.get("quantity_selection")
@@ -1434,7 +2681,10 @@ def build_envelopes(
     hard_gate = _load_hard_gate_for_envelope()
     physics_samples: list[dict[str, Any]] = []
     renderer_samples: list[dict[str, Any]] = []
-    path_set: set[str] | None = None
+    # Quantity paths are frozen per semantic regime and continuation horizon.
+    # Contact lists can legitimately change cardinality between regimes, so a
+    # single global path set would incorrectly reject a valid exact schedule.
+    path_sets: dict[tuple[str, int], set[str]] = {}
     contact_identity_exact = True
     categorical = True
     for pair_id in required:
@@ -1452,22 +2702,55 @@ def build_envelopes(
             if isinstance(regimes, str):
                 regimes = [regimes]
             for horizon in sorted(lsnap):
+                if strict_contract:
+                    for side, snapshot in (("A", lsnap[horizon]), ("B", rsnap[horizon])):
+                        try:
+                            _validate_invariant_snapshot(
+                                snapshot,
+                                required_roots=required_invariant_roots,
+                            )
+                        except ProtocolError as exc:
+                            raise NullCalibrationError(
+                                f"{pair_id}/{window_id}/{horizon} {side} invariant roots are invalid: {exc}"
+                            ) from exc
                 left_values = _selected_numeric_leaves(lsnap[horizon], roots)
                 right_values = _selected_numeric_leaves(rsnap[horizon], roots)
                 if set(left_values) != set(right_values):
                     raise NullCalibrationError(f"quantity path set differs at {pair_id}/{window_id}/{horizon}")
-                if path_set is None:
-                    path_set = set(left_values)
-                elif set(left_values) != path_set:
-                    raise NullCalibrationError("quantity-selection path set is inconsistent across frozen windows")
+                normalized_regimes = [str(regime) for regime in regimes]
+                for regime in normalized_regimes:
+                    group_key = (regime, int(horizon))
+                    current_paths = set(left_values)
+                    previous_paths = path_sets.get(group_key)
+                    if previous_paths is None:
+                        path_sets[group_key] = current_paths
+                    elif current_paths != previous_paths:
+                        raise NullCalibrationError(
+                            "quantity-selection path set is inconsistent at "
+                            f"{regime}@{horizon}"
+                        )
+                history_left = [lsnap[step] for step in sorted(lsnap)]
+                history_right = [rsnap[step] for step in sorted(rsnap)]
+                left_action = _snapshot_action(lsnap[horizon])
+                right_action = _snapshot_action(rsnap[horizon])
+                if strict_contract and (
+                    left_action is None
+                    or right_action is None
+                    or left_action.tobytes(order="C") != right_action.tobytes(order="C")
+                ):
+                    raise NullCalibrationError(
+                        f"{pair_id}/{window_id}/{horizon} frozen action evidence differs or is missing"
+                    )
                 for quantity in sorted(left_values):
                     if left_values[quantity].shape != right_values[quantity].shape:
                         raise NullCalibrationError(f"quantity shape differs at {pair_id}/{quantity}")
-                    for regime in regimes:
+                    for regime in normalized_regimes:
                         evidence = _independent_evidence(
                             str(regime),
-                            _window_snapshots(lwindow).get(0, lsnap[horizon]),
+                            history_left[0],
                             lsnap[horizon],
+                            action=left_action,
+                            history=history_left,
                         )
                         physics_samples.append(
                             {
@@ -1484,17 +2767,41 @@ def build_envelopes(
                 if _snapshot_contacts(lsnap[horizon]) != _snapshot_contacts(rsnap[horizon]):
                     contact_identity_exact = False
                     categorical = False
-                left_images, right_images = _renderer_images(lsnap[horizon]), _renderer_images(rsnap[horizon])
+                renderer_config = config.get("renderer", {}) if isinstance(config, Mapping) else {}
+                configured_camera = (
+                    str(renderer_config.get("camera", DEFAULT_CAMERA))
+                    if isinstance(renderer_config, Mapping)
+                    else DEFAULT_CAMERA
+                )
+                configured_key = (
+                    str(renderer_config.get("observation_key", DEFAULT_RENDER_KEY))
+                    if isinstance(renderer_config, Mapping)
+                    else DEFAULT_RENDER_KEY
+                )
+                if not configured_camera.strip() or not configured_key.strip():
+                    raise NullCalibrationError("renderer camera and observation_key must be non-empty")
+                left_images = _renderer_images(
+                    lsnap[horizon], camera=configured_camera, configured_key=configured_key
+                )
+                right_images = _renderer_images(
+                    rsnap[horizon], camera=configured_camera, configured_key=configured_key
+                )
                 if set(left_images) != set(right_images):
                     raise NullCalibrationError(f"renderer observation key set differs at {pair_id}/{window_id}/{horizon}")
-                controls = _attempt_control_pair(left, right)
+                controls = _attempt_control_pair(
+                    left,
+                    right,
+                    left_action=left_action,
+                    right_action=right_action,
+                    strict=strict_contract,
+                )
                 for key in sorted(left_images):
-                    for regime in regimes:
+                    for regime in normalized_regimes:
                         renderer_samples.append(
                             {
                                 "pair_id": pair_id,
                                 "trace_id": pair.trace_id,
-                                "camera": DEFAULT_CAMERA,
+                                "camera": configured_camera,
                                 "key": key,
                                 "regime": str(regime),
                                 "horizon": horizon,
@@ -1503,7 +2810,7 @@ def build_envelopes(
                                 "rgb_b": right_images[key],
                             }
                         )
-    if path_set is None or not physics_samples:
+    if not path_sets or not physics_samples:
         raise NullCalibrationError("no explicitly selected physics quantities were observed")
     required_groups = sorted(
         {(str(item["regime"]), str(item["quantity"]), int(item["horizon"])) for item in physics_samples}
@@ -1528,8 +2835,8 @@ def build_envelopes(
         {
             "n_pairs": PAIR_COUNT,
             "pair_ids": sorted(required),
-            "configured_camera": DEFAULT_CAMERA,
-            "configured_observation_key": DEFAULT_RENDER_KEY,
+            "configured_camera": configured_camera,
+            "configured_observation_key": configured_key,
         }
     )
     discrete = {
@@ -1540,6 +2847,7 @@ def build_envelopes(
         "done_termination_exact": all(item.discrete.get("done_termination_exact", False) for item in by_id.values()),
         "terminal_timing_exact": all(item.discrete.get("terminal_timing_exact", False) for item in by_id.values()),
         "gripper_exact": all(item.discrete.get("gripper_exact", False) for item in by_id.values()),
+        "action_exact": all(item.discrete.get("action_exact", False) for item in by_id.values()),
         "pair_count": PAIR_COUNT,
         "divergences": [
             {"pair_id": item.pair_id, "reasons": list(item.reasons)}

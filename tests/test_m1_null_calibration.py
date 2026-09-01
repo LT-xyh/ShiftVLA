@@ -409,3 +409,154 @@ def test_module_keeps_policy_and_environment_imports_lazy() -> None:
     assert "m1_state_replay" not in eager
     assert "dcu_preflight" not in eager
     assert "smolvla" not in eager.lower()
+
+
+def test_strict_config_requires_obs_type_and_frozen_state_replay_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calibration = _module()
+    registry_path = tmp_path / "registry.json"
+    tape_path = tmp_path / "actions.npy"
+    payload = _registry_payload(calibration, registry_path=registry_path, tape_path=tape_path)
+    config_path = _config_file(calibration, tmp_path, registry_path, tmp_path / "run")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["strict_runtime_contract"] = True
+    config.pop("obs_type", None)
+    config["config_sha256"] = calibration.config_contract_sha256(config)
+    config_path.write_text(calibration.canonical_json(config) + "\n", encoding="utf-8")
+    monkeypatch.setattr(calibration, "_load_verified_registry", lambda _path: deepcopy(payload))
+    with pytest.raises(calibration.ProvenanceError, match="obs_type|state_replay"):
+        calibration.prepare_run(config_path=config_path)
+
+
+def test_pair_validation_rejects_frozen_attempt_id_drift() -> None:
+    calibration = _module()
+    pair = {"pair_id": "m1n0-pair-000"}
+    left = _attempt_result(calibration, pair["pair_id"], "A", 11)
+    right = _attempt_result(calibration, pair["pair_id"], "B", 12)
+    left["attempt_id"] = "m1n0-pair-001-A"
+    validated = calibration.validate_pair(pair, {"A": left, "B": right}, parent_pid=1)
+    assert validated.valid is False
+    assert any("attempt_id" in reason for reason in validated.reasons)
+
+
+def test_execute_attempt_records_real_proc_identity_and_recursive_observation_metadata() -> None:
+    calibration = _module()
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.steps = 0
+
+        def step(self, action: np.ndarray) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+            self.steps += 1
+            terminal = self.steps == 82
+            observation = {
+                "views": {"agentview": {"image": np.full((2, 2, 3), self.steps, dtype=np.uint8)}},
+                "agent_pos": np.asarray([self.steps], dtype=np.float32),
+            }
+            return observation, 0.0, terminal, False, {
+                "termination_reason": "predicate_transition" if terminal else None,
+                "success": terminal,
+            }
+
+        def collect_invariants(self) -> dict[str, Any]:
+            return _snapshot(self.steps)
+
+        def render_rgb(self) -> np.ndarray:
+            return np.full((2, 2, 3), self.steps, dtype=np.uint8)
+
+        def close(self) -> None:
+            return None
+
+    result = calibration.execute_attempt(
+        {
+            "attempt_id": "m1n0-pair-000-A",
+            "pair_id": "m1n0-pair-000",
+            "side": "A",
+            "trace_id": "trace",
+            "config": {"task": dict(calibration.TASK)},
+            "registry": {
+                "traces": [{
+                    "trace_id": "trace",
+                    "windows": [{
+                        "window_id": "free_motion",
+                        "regimes": ["free_motion"],
+                        "capture_offset": 1,
+                        "continuation_horizon": 1,
+                        "source_coverage": {"regimes": ["free_motion"]},
+                    }],
+                }],
+            },
+            "tape": np.zeros((82, 7), dtype=np.float32),
+        },
+        adapter_factory=lambda _config: FakeAdapter(),
+    )
+    assert result["status"] == "completed"
+    pid, start, boot = calibration._parse_proc_start_identity(result["process_start_identity"])
+    assert pid == result["pid"]
+    assert start and boot
+    snapshot = result["windows"]["free_motion"]["snapshots"]["0"]
+    assert "observation_metadata" in snapshot
+    assert "views.agentview.image" in snapshot["observation_metadata"]["arrays"]
+
+
+def test_strict_quantity_selection_rejects_missing_required_roots() -> None:
+    calibration = _module()
+    pair_results = []
+    for index in range(20):
+        pair_id = f"m1n0-pair-{index:03d}"
+        pair_results.append(
+            calibration.validate_pair(
+                {"pair_id": pair_id, "trace_id": "trace"},
+                {
+                    "A": _attempt_result(calibration, pair_id, "A", 100 + 2 * index),
+                    "B": _attempt_result(calibration, pair_id, "B", 101 + 2 * index),
+                },
+                parent_pid=1,
+            )
+        )
+
+
+def test_quantity_selection_keeps_contact_distances_as_floating_leaves() -> None:
+    calibration = _module()
+    snapshot = {
+        "invariants": {
+            "contacts": [("robot_finger", "target_geom", -0.0125)],
+        }
+    }
+    values = calibration._selected_numeric_leaves(snapshot, ("contacts",))
+    assert set(values) == {"contacts[0].distance"}
+    assert values["contacts[0].distance"].dtype == np.dtype("float64")
+    assert values["contacts[0].distance"].tolist() == [-0.0125]
+
+
+def test_renderer_envelope_uses_configured_camera_and_observation_key() -> None:
+    calibration = _module()
+    pair_results = []
+    for index in range(20):
+        pair_id = f"m1n0-pair-{index:03d}"
+        pair_results.append(
+            calibration.validate_pair(
+                {"pair_id": pair_id, "trace_id": "trace"},
+                {
+                    "A": _attempt_result(calibration, pair_id, "A", 100 + 2 * index),
+                    "B": _attempt_result(calibration, pair_id, "B", 101 + 2 * index),
+                },
+                parent_pid=1,
+            )
+        )
+    envelopes = calibration.build_envelopes(
+        pair_results,
+        required_pair_ids=[f"m1n0-pair-{index:03d}" for index in range(20)],
+        config={"renderer": {"camera": "sideview", "observation_key": "side_rgb"}},
+    )
+    assert "sideview" in envelopes.renderer["groups"]
+    assert "side_rgb" in envelopes.renderer["groups"]["sideview"]
+    with pytest.raises(calibration.NullCalibrationError, match="required|root|missing"):
+        calibration.build_envelopes(
+            pair_results,
+            required_pair_ids=[f"m1n0-pair-{index:03d}" for index in range(20)],
+            config={
+                "strict_runtime_contract": True,
+                "quantity_selection": {"root_patterns": list(calibration.STRICT_QUANTITY_ROOTS)},
+                "invariants": {"required_roots": list(calibration.STRICT_INVARIANT_ROOTS)},
+            },
+        )
