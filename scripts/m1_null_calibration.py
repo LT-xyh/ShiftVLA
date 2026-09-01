@@ -215,7 +215,11 @@ def _without_hash(value: Mapping[str, Any], field: str) -> dict[str, Any]:
 
 
 def payload_sha256(value: Mapping[str, Any]) -> str:
-    return sha256_bytes(canonical_json(_without_hash(value, "output_sha256")).encode("utf-8"))
+    payload = _without_hash(value, "output_sha256")
+    # Parent-side transport metadata is added after a worker publishes its
+    # result file.  It describes framing/logs, not the attempt payload.
+    payload.pop("worker_transport", None)
+    return sha256_bytes(canonical_json(payload).encode("utf-8"))
 
 
 def config_contract_sha256(value: Mapping[str, Any]) -> str:
@@ -423,6 +427,12 @@ def _registry_terminal_contract(
         for item in observed
     ):
         raise ProvenanceError("registry has no frozen legal terminal step/reason")
+    if not any(
+        isinstance(item.get("terminal_evidence", item.get("evidence")), Mapping)
+        and bool(item.get("terminal_evidence", item.get("evidence")))
+        for item in observed
+    ):
+        raise ProvenanceError("registry has no frozen official terminal evidence")
     return contract
 
 
@@ -969,6 +979,27 @@ def _window_snapshots(window: Mapping[str, Any]) -> dict[int, Mapping[str, Any]]
     return dict(sorted(result.items()))
 
 
+def _window_contract_map(value: Any) -> dict[str, Mapping[str, Any]]:
+    """Return only persisted window IDs, without regime aliases."""
+
+    raw = value.get("windows") if isinstance(value, Mapping) else value
+    if isinstance(raw, Mapping):
+        items = list(raw.values())
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        items = list(raw)
+    else:
+        return {}
+    result: dict[str, Mapping[str, Any]] = {}
+    for index, item in enumerate(items):
+        if not isinstance(item, Mapping):
+            continue
+        window_id = str(item.get("window_id", item.get("regime", index)))
+        if window_id in result:
+            raise ProtocolError(f"duplicate persisted window ID: {window_id}")
+        result[window_id] = item
+    return result
+
+
 def _validate_invariant_snapshot(
     snapshot: Mapping[str, Any], *, required_roots: Sequence[str] = STRICT_INVARIANT_ROOTS
 ) -> None:
@@ -1013,7 +1044,10 @@ def _configured_invariant_roots(config: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _validate_terminal(
-    terminal: Mapping[str, Any], expected: Mapping[str, Any] | None = None
+    terminal: Mapping[str, Any],
+    expected: Mapping[str, Any] | None = None,
+    *,
+    require_official_evidence: bool = False,
 ) -> None:
     missing = [field_name for field_name in TERMINAL_FIELDS if field_name not in terminal]
     if missing:
@@ -1025,6 +1059,17 @@ def _validate_terminal(
     for field_name in ("success", "terminated", "truncated"):
         if not isinstance(terminal[field_name], (bool, np.bool_)):
             raise ProtocolError(f"terminal {field_name} must be boolean")
+    if require_official_evidence:
+        evidence = terminal.get("official_evidence")
+        if not isinstance(evidence, Mapping):
+            raise ProtocolError("terminal official evidence is missing")
+        if evidence.get("source") not in {"step_result", "step_info", "adapter"}:
+            raise ProtocolError("terminal official evidence source is invalid")
+        if evidence.get("returned_step") is not True:
+            raise ProtocolError("terminal official evidence is not tied to returned step")
+        for field_name in ("terminated", "truncated"):
+            if evidence.get(field_name) is not terminal[field_name]:
+                raise ProtocolError(f"terminal official evidence {field_name} differs")
     if expected is not None:
         for field_name in TERMINAL_FIELDS:
             if not _exact_equal(terminal[field_name], expected[field_name]):
@@ -1221,6 +1266,9 @@ def validate_pair(
     expected_frozen_inputs: Mapping[str, Any] | None = None,
     expected_terminal: Mapping[str, Any] | None = None,
     expected_runtime_identity: Mapping[str, Any] | None = None,
+    expected_windows: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    expected_action_tape: np.ndarray | None = None,
+    required_invariant_roots: Sequence[str] = STRICT_INVARIANT_ROOTS,
     strict: bool = False,
 ) -> PairValidation:
     """Validate one complete A/B pair without applying numeric null limits."""
@@ -1287,18 +1335,53 @@ def validate_pair(
                 if field_name not in protocol:
                     reasons.append(f"{side} observed protocol counter is missing: {field_name}")
             for field_name in ("step_calls", "invariant_collections"):
-                if field_name in protocol and int(protocol[field_name]) != ACTION_SHAPE[0]:
-                    reasons.append(f"{side} did not observe exactly 82 {field_name}")
-            if "render_calls" in protocol and int(protocol["render_calls"]) != ACTION_SHAPE[0]:
-                reasons.append(f"{side} did not observe exactly 82 render_calls")
+                if field_name in protocol:
+                    try:
+                        valid_count = (
+                            not isinstance(protocol[field_name], bool)
+                            and int(protocol[field_name]) == protocol[field_name]
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        valid_count = False
+                    if not valid_count or int(protocol[field_name]) != ACTION_SHAPE[0]:
+                        reasons.append(f"{side} did not observe exactly 82 {field_name}")
+            if "render_calls" in protocol:
+                try:
+                    valid_count = (
+                        not isinstance(protocol["render_calls"], bool)
+                        and int(protocol["render_calls"]) == protocol["render_calls"]
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    valid_count = False
+                if not valid_count or int(protocol["render_calls"]) != ACTION_SHAPE[0]:
+                    reasons.append(f"{side} did not observe exactly 82 render_calls")
         for field_name in FORBIDDEN_PROTOCOL_FIELDS:
             value = protocol.get(field_name, 0)
-            if value not in (0, False, None):
+            if strict and field_name in protocol:
+                try:
+                    valid_zero = (
+                        not isinstance(value, bool)
+                        and int(value) == value
+                        and int(value) == 0
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    valid_zero = value is False or value is None
+                if not valid_zero:
+                    reasons.append(f"{side} forbidden protocol activity: {field_name}={value}")
+            elif value not in (0, False, None):
                 reasons.append(f"{side} forbidden protocol activity: {field_name}={value}")
         if "construction_reset_count" in protocol and protocol.get("construction_reset_count") != 1:
             reasons.append(f"{side} construction reset count is not exactly one")
-        if "actions_executed" in protocol and int(protocol.get("actions_executed", -1)) != ACTION_SHAPE[0]:
-            reasons.append(f"{side} did not execute exactly 82 actions")
+        if "actions_executed" in protocol:
+            try:
+                valid_count = (
+                    not isinstance(protocol["actions_executed"], bool)
+                    and int(protocol["actions_executed"]) == protocol["actions_executed"]
+                )
+            except (TypeError, ValueError, OverflowError):
+                valid_count = False
+            if not valid_count or int(protocol["actions_executed"]) != ACTION_SHAPE[0]:
+                reasons.append(f"{side} did not execute exactly 82 actions")
         output_sha = attempt.get("output_sha256")
         artifact_sha = attempt.get("artifact_sha256")
         if strict and not isinstance(output_sha, str):
@@ -1415,6 +1498,41 @@ def validate_pair(
         reasons.append("pair trace_id differs from attempt frozen input")
 
     left_windows, right_windows = _window_map(left), _window_map(right)
+    if strict:
+        expected_window_map = _window_contract_map(expected_windows) if expected_windows is not None else {}
+        left_contract_windows = _window_contract_map(left)
+        right_contract_windows = _window_contract_map(right)
+        if expected_windows is not None:
+            if set(left_contract_windows) != set(expected_window_map):
+                reasons.append("A persisted window IDs differ from frozen schedule")
+            if set(right_contract_windows) != set(expected_window_map):
+                reasons.append("B persisted window IDs differ from frozen schedule")
+            for window_id, frozen in expected_window_map.items():
+                for side, actual in (
+                    ("A", left_contract_windows.get(window_id)),
+                    ("B", right_contract_windows.get(window_id)),
+                ):
+                    if actual is None:
+                        continue
+                    for field_name in ("window_id", "regimes", "capture_offset", "continuation_horizon"):
+                        expected_value = frozen.get(field_name)
+                        actual_value = actual.get(field_name)
+                        if field_name == "regimes":
+                            expected_value = [str(item) for item in (expected_value or ())]
+                            actual_value = [str(item) for item in (actual_value or ())]
+                        if not _exact_equal(actual_value, expected_value):
+                            reasons.append(
+                                f"{side} window {window_id} {field_name} differs from frozen schedule"
+                            )
+                    actual_snapshots = _window_snapshots(actual)
+                    try:
+                        frozen_horizon = int(frozen["continuation_horizon"])
+                    except (KeyError, TypeError, ValueError):
+                        frozen_horizon = -1
+                    if set(actual_snapshots) != set(range(frozen_horizon + 1)):
+                        reasons.append(f"{side} window {window_id} snapshot coordinates are not frozen")
+        elif set(left_contract_windows) != set(right_contract_windows):
+            reasons.append("persisted window IDs differ between A and B")
     regime_keys = sorted(set(left_windows) | set(right_windows))
     if not regime_keys:
         reasons.append("pair has no frozen regime windows")
@@ -1427,6 +1545,7 @@ def validate_pair(
         "terminal_timing_exact": True,
         "gripper_exact": True,
         "action_exact": True,
+        "observation_exact": True,
         "regime_exact": set(left_windows) == set(right_windows),
         "divergences": [],
     }
@@ -1443,6 +1562,16 @@ def validate_pair(
             discrete["categorical_gate"] = False
             continue
         for horizon in sorted(set(lsnap) & set(rsnap)):
+            if strict:
+                for side, snapshot in (("A", lsnap[horizon]), ("B", rsnap[horizon])):
+                    try:
+                        _validate_invariant_snapshot(
+                            snapshot,
+                            required_roots=required_invariant_roots,
+                        )
+                    except ProtocolError as exc:
+                        discrete["categorical_gate"] = False
+                        reasons.append(f"{side} {regime}@{horizon} invariant evidence is invalid: {exc}")
             li, ri = _invariants(lsnap[horizon]), _invariants(rsnap[horizon])
             exact_fields = (
                 ("predicates", "predicate_exact"),
@@ -1496,6 +1625,90 @@ def validate_pair(
                         discrete["action_exact"] = False
                         discrete["categorical_gate"] = False
                         reasons.append(f"{side} {regime}@{horizon} action tape hash differs from frozen input")
+                if expected_action_tape is not None:
+                    try:
+                        expected_action = np.asarray(expected_action_tape)[
+                            int(lwindow["capture_offset"]) + int(horizon) - 1
+                        ]
+                        if (
+                            left_action is None
+                            or right_action is None
+                            or left_action.tobytes(order="C") != expected_action.tobytes(order="C")
+                            or right_action.tobytes(order="C") != expected_action.tobytes(order="C")
+                        ):
+                            discrete["action_exact"] = False
+                            discrete["categorical_gate"] = False
+                            message = f"{regime}@{horizon} action differs from frozen tape"
+                            discrete["divergences"].append(message)
+                            reasons.append(message)
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        discrete["action_exact"] = False
+                        discrete["categorical_gate"] = False
+                        reasons.append(f"{regime}@{horizon} frozen tape coordinate is invalid")
+                for side, snapshot in (("A", lsnap[horizon]), ("B", rsnap[horizon])):
+                    metadata = snapshot.get("observation_metadata")
+                    raw_observation = snapshot.get("raw_observation")
+                    if not isinstance(metadata, Mapping):
+                        discrete["observation_exact"] = False
+                        discrete["categorical_gate"] = False
+                        reasons.append(f"{side} {regime}@{horizon} observation metadata is missing")
+                    else:
+                        try:
+                            observed_metadata = _observation_metadata(raw_observation)
+                        except ProtocolError as exc:
+                            discrete["observation_exact"] = False
+                            discrete["categorical_gate"] = False
+                            reasons.append(f"{side} {regime}@{horizon} observation evidence is invalid: {exc}")
+                        else:
+                            if not _exact_equal(dict(metadata), observed_metadata):
+                                discrete["observation_exact"] = False
+                                discrete["categorical_gate"] = False
+                                reasons.append(
+                                    f"{side} {regime}@{horizon} observation metadata is inconsistent"
+                                )
+                left_metadata = lsnap[horizon].get("observation_metadata")
+                right_metadata = rsnap[horizon].get("observation_metadata")
+                if not _exact_equal(left_metadata, right_metadata):
+                    discrete["observation_exact"] = False
+                    discrete["categorical_gate"] = False
+                    message = f"{regime}@{horizon} observation structure differs"
+                    discrete["divergences"].append(message)
+                    reasons.append(message)
+                for side, window, snapshots, action in (
+                    ("A", lwindow, lsnap, left_action),
+                    ("B", rwindow, rsnap, right_action),
+                ):
+                    history = [snapshots[step] for step in sorted(snapshots)]
+                    derived = _independent_evidence(
+                        regime,
+                        history[0],
+                        snapshots[horizon],
+                        action=action,
+                        history=history,
+                    )
+                    persisted = window.get("evidence")
+                    if not isinstance(persisted, Mapping):
+                        discrete["categorical_gate"] = False
+                        reasons.append(f"{side} {regime}@{horizon} bilateral evidence is missing")
+                    elif horizon == max(snapshots) and not _exact_equal(persisted, derived):
+                        discrete["categorical_gate"] = False
+                        reasons.append(f"{side} {regime}@{horizon} bilateral evidence is inconsistent")
+                    requirements = {
+                        "contact": bool(derived.get("contact", {}).get("present")),
+                        "grasp": bool(derived.get("grasp", {}).get("present")),
+                        "carried": bool(derived.get("carried", {}).get("present")),
+                    }
+                    required = {
+                        "contact": regime in {"contact", "grasp"},
+                        "grasp": regime == "grasp",
+                        "carried": regime == "carried",
+                    }
+                    for evidence_name, needed in required.items():
+                        if needed and not requirements[evidence_name]:
+                            discrete["categorical_gate"] = False
+                            reasons.append(
+                                f"{side} {regime}@{horizon} lacks required {evidence_name} evidence"
+                            )
             lgrip = li.get("gripper", {}) if isinstance(li.get("gripper"), Mapping) else {}
             rgrip = ri.get("gripper", {}) if isinstance(ri.get("gripper"), Mapping) else {}
             if not _exact_equal(lgrip.get("current_action"), rgrip.get("current_action")):
@@ -1507,12 +1720,12 @@ def validate_pair(
     left_terminal, right_terminal = _terminal_semantics(left), _terminal_semantics(right)
     if left.get("status") == "completed":
         try:
-            _validate_terminal(left_terminal, expected_terminal)
+            _validate_terminal(left_terminal, expected_terminal, require_official_evidence=strict)
         except ProtocolError as exc:
             reasons.append(f"A terminal contract is invalid: {exc}")
     if right.get("status") == "completed":
         try:
-            _validate_terminal(right_terminal, expected_terminal)
+            _validate_terminal(right_terminal, expected_terminal, require_official_evidence=strict)
         except ProtocolError as exc:
             reasons.append(f"B terminal contract is invalid: {exc}")
     for name in TERMINAL_FIELDS:
@@ -1765,6 +1978,59 @@ def _step_parts(result: Any) -> tuple[Any, bool, bool, Mapping[str, Any]]:
     return observation, terminated, truncated, info
 
 
+def _terminal_reason_evidence(
+    adapter: Any,
+    result: Any,
+    info: Mapping[str, Any],
+    *,
+    terminated: bool,
+    truncated: bool,
+) -> tuple[Any, dict[str, Any]]:
+    """Return the returned-step reason and the official source for it.
+
+    A frozen terminal contract is not evidence that the environment actually
+    returned that reason.  Keep the source explicit so strict validation can
+    reject a worker that merely copied the configured contract.
+    """
+
+    candidates: list[tuple[str, str, Any]] = []
+    if isinstance(result, Mapping):
+        for field_name in ("termination_reason", "terminal_reason"):
+            if result.get(field_name) is not None:
+                candidates.append(("step_result", field_name, result[field_name]))
+    for field_name in ("termination_reason", "terminal_reason"):
+        if info.get(field_name) is not None:
+            candidates.append(("step_info", field_name, info[field_name]))
+    for owner in (adapter, getattr(adapter, "inner", None)):
+        if owner is None:
+            continue
+        for field_name in (
+            "last_termination_reason",
+            "termination_reason",
+            "last_terminal_reason",
+            "terminal_reason",
+        ):
+            value = getattr(owner, field_name, None)
+            if value is not None and not callable(value):
+                candidates.append(("adapter", field_name, value))
+    if not candidates:
+        return None, {
+            "source": "missing",
+            "field": None,
+            "returned_step": True,
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+        }
+    source, field_name, reason = candidates[0]
+    return reason, {
+        "source": source,
+        "field": field_name,
+        "returned_step": True,
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+    }
+
+
 def _is_terminal(result: Any) -> bool:
     _, terminated, truncated, _ = _step_parts(result)
     return terminated or truncated
@@ -1885,8 +2151,13 @@ def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step:
         "capture_count": ("capture_count",),
         "policy_calls": ("policy_calls",),
         "processor_calls": ("processor_calls", "processors_calls"),
+        "processors_calls": ("processors_calls", "processor_calls"),
         "retry_count": ("retry_count",),
         "post_terminal_steps": ("post_terminal_steps",),
+        "set_init_state_count": ("set_init_state_count",),
+        "settle_count": ("settle_count",),
+        "dummy_action_count": ("dummy_action_count",),
+        "autoreset_count": ("autoreset_count",),
     }
     for field_name, aliases in fields.items():
         value, source = _adapter_counter(adapter, field_name, *aliases)
@@ -1924,16 +2195,20 @@ def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict
         identity = _proc_start_identity(os.getpid())
     except Exception:
         identity = None
-    protocol = {
-        "construction_reset_count": 0,
-        "restore_count": 0,
-        "capture_count": 0,
-        "policy_calls": 0,
-        "processor_calls": 0,
-        "retry_count": 0,
-        "post_terminal_steps": 0,
-        "actions_executed": 0,
-    }
+    protocol = {"construction_reset_count": 0}
+    protocol.update({field_name: 0 for field_name in FORBIDDEN_PROTOCOL_FIELDS})
+    protocol.update(
+        {
+            "actions_executed": 0,
+            "step_calls": 0,
+            "render_calls": 0,
+            "invariant_collections": 0,
+            "counter_sources": {
+                field_name: "failed_before_protocol_observation"
+                for field_name in FORBIDDEN_PROTOCOL_FIELDS
+            },
+        }
+    )
     return {
         "attempt_id": attempt.get("attempt_id"),
         "pair_id": attempt.get("pair_id"),
@@ -2022,13 +2297,20 @@ def execute_attempt(
                 "action": np.asarray(action, dtype=ACTION_DTYPE).copy(),
             }
             if terminated or truncated:
-                reason = info.get("termination_reason", info.get("terminal_reason"))
+                reason, official_evidence = _terminal_reason_evidence(
+                    adapter,
+                    step_result,
+                    info,
+                    terminated=terminated,
+                    truncated=truncated,
+                )
                 terminal = {
                     "step": step,
                     "termination_reason": reason,
                     "success": _terminal_success(adapter, info),
                     "terminated": bool(terminated),
                     "truncated": bool(truncated),
+                    "official_evidence": official_evidence,
                     "terminal_observation": observation,
                 }
                 break
@@ -2039,7 +2321,11 @@ def execute_attempt(
         expected_terminal = attempt.get("terminal_contract")
         if expected_terminal is None and isinstance(config.get("terminal_contract"), Mapping):
             expected_terminal = config["terminal_contract"]
-        _validate_terminal(terminal, expected_terminal if isinstance(expected_terminal, Mapping) else None)
+        _validate_terminal(
+            terminal,
+            expected_terminal if isinstance(expected_terminal, Mapping) else None,
+            require_official_evidence=strict,
+        )
         output_windows: dict[str, Any] = {}
         for window in windows:
             offset = int(window["capture_offset"])
@@ -2050,6 +2336,14 @@ def execute_attempt(
                 if absolute not in timeline:
                     raise ProtocolError(f"missing frozen window coordinate {window['window_id']}@{relative}")
                 snapshots[str(relative)] = timeline[absolute]
+            snapshot_history = [snapshots[str(relative)] for relative in range(horizon + 1)]
+            window_evidence = _independent_evidence(
+                str(window["window_id"]),
+                snapshot_history[0],
+                snapshot_history[-1],
+                action=_snapshot_action(snapshot_history[-1]),
+                history=snapshot_history,
+            )
             output_windows[str(window["window_id"])] = {
                 "window_id": str(window["window_id"]),
                 "regimes": list(window["regimes"]),
@@ -2057,6 +2351,7 @@ def execute_attempt(
                 "continuation_horizon": horizon,
                 "snapshots": snapshots,
                 "action_sha256": actual_tape_sha,
+                "evidence": window_evidence,
             }
         runtime_identity = _runtime_identity_audit(config, adapter=adapter) if strict else {}
         process_identity = _proc_start_identity(os.getpid())
@@ -2381,20 +2676,81 @@ def _bind_worker_result(result: Mapping[str, Any], request: Mapping[str, Any]) -
     return bound
 
 
+def _stream_artifact(path: Path, value: str | bytes | None) -> dict[str, Any]:
+    raw = value.encode("utf-8") if isinstance(value, str) else bytes(value or b"")
+    record = _exclusive_bytes(path, raw)
+    return {"path": str(record), "sha256": sha256_bytes(raw), "size": len(raw)}
+
+
 def _default_process_runner(attempt: Mapping[str, Any]) -> dict[str, Any]:
     job_dir = _resolve_path(attempt.get("output_root", "runs/m1_null_calibration")) / "jobs"
     job_path = job_dir / f"{attempt['attempt_id']}.json"
+    result_path = job_dir / f"{attempt['attempt_id']}.result.json"
+    stdout_path = job_dir / f"{attempt['attempt_id']}.stdout.log"
+    stderr_path = job_dir / f"{attempt['attempt_id']}.stderr.log"
     write_json_atomic(job_path, dict(attempt))
     configured_python = attempt.get("python")
     if not isinstance(configured_python, str) or not configured_python.strip():
         configured_python = sys.executable
-    command = [configured_python, str(Path(__file__).resolve()), "--worker", "--job", str(job_path)]
+    command = [
+        configured_python,
+        str(Path(__file__).resolve()),
+        "--worker",
+        "--job",
+        str(job_path),
+        "--result",
+        str(result_path),
+    ]
     completed = subprocess.run(command, cwd=str(_ROOT), capture_output=True, text=True, check=False)
-    return _normalise_process_result(completed)
+    transport: dict[str, Any] = {
+        "protocol": "dedicated_result_file_v1",
+        "returncode": int(completed.returncode),
+        "result": {
+            "path": str(result_path),
+            "exists": result_path.is_file() and not result_path.is_symlink(),
+        },
+        "stdout": _stream_artifact(stdout_path, completed.stdout),
+        "stderr": _stream_artifact(stderr_path, completed.stderr),
+    }
+    if result_path.is_file() and not result_path.is_symlink():
+        try:
+            result = _load_document(result_path)
+            transport["result"].update(
+                {
+                    "sha256": sha256_file(result_path),
+                    "size": result_path.stat().st_size,
+                }
+            )
+            result = _json_restore(result)
+        except Exception as exc:
+            result = {
+                "status": "failed",
+                "error": f"worker result file is invalid: {type(exc).__name__}: {exc}",
+            }
+    else:
+        result = {
+            "status": "failed",
+            "error": "worker did not publish its dedicated result file",
+        }
+    result["worker_transport"] = transport
+    return result
 
 
 def _attempt_artifact_path(prepared: PreparedRun, attempt_id: str) -> Path:
     return _resolve_path(prepared.run_spec["output_root"]) / "attempts" / f"{attempt_id}.json"
+
+
+def _verified_artifact_record(path: str | Path, expected_sha256: str | None = None) -> dict[str, Any]:
+    target = Path(path)
+    digest = sha256_file(target)
+    if expected_sha256 is not None and digest.lower() != str(expected_sha256).lower():
+        raise PublicationError(f"artifact hash mismatch for {target}: {digest} != {expected_sha256}")
+    return {
+        "path": str(target),
+        "sha256": digest,
+        "size": target.stat().st_size,
+        "verified": verify_artifact_hash(target, digest),
+    }
 
 
 def run_calibration(
@@ -2421,6 +2777,8 @@ def run_calibration(
     }
     attempts: list[dict[str, Any]] = []
     by_pair: dict[str, dict[str, Mapping[str, Any]]] = {}
+    integrity_errors: list[str] = []
+    attempt_artifacts: list[dict[str, Any]] = []
     for pair in pairs:
         if not isinstance(pair, Mapping):
             raise ProvenanceError("pair registry contains a malformed pair")
@@ -2440,13 +2798,27 @@ def run_calibration(
                 result.update({"attempt_id": request["attempt_id"], "pair_id": pair_id, "side": side})
             artifact_path = _attempt_artifact_path(prepared, str(request["attempt_id"]))
             artifact_record = write_json_atomic(artifact_path, result)
+            artifact_verified = False
+            try:
+                verified_record = _verified_artifact_record(artifact_path, artifact_record["sha256"])
+                attempt_artifacts.append(
+                    {
+                        "attempt_id": str(request["attempt_id"]),
+                        **verified_record,
+                    }
+                )
+                artifact_verified = bool(verified_record["verified"])
+            except Exception as exc:
+                integrity_errors.append(
+                    f"{request['attempt_id']}: attempt artifact integrity failed: {type(exc).__name__}: {exc}"
+                )
             result = {
                 **result,
                 "artifact_path": str(artifact_path),
                 "artifact_sha256": artifact_record["sha256"],
                 "artifact_size": artifact_record["size"],
                 "artifact_integrity": {
-                    "verified": verify_artifact_hash(artifact_path, artifact_record["sha256"]),
+                    "verified": artifact_verified,
                     "hash_domain": "canonical_json_bytes_with_trailing_newline",
                 },
             }
@@ -2464,6 +2836,9 @@ def run_calibration(
                 expected_frozen_inputs=expected_frozen_inputs,
                 expected_terminal=prepared.run_spec.get("terminal_contract"),
                 expected_runtime_identity=runtime_identity_contract if strict else None,
+                expected_windows=prepared.run_spec.get("windows") if strict else None,
+                expected_action_tape=prepared.tape if strict else None,
+                required_invariant_roots=_configured_invariant_roots(config),
                 strict=strict,
             )
         )
@@ -2490,9 +2865,10 @@ def run_calibration(
             "physics": False,
             "discrete": all(item.discrete.get("categorical_gate", False) for item in validations),
             "renderer": False,
-            "integrity": True,
+            "integrity": not integrity_errors,
         },
-        "errors": [f"{item.pair_id}: {reason}" for item in validations for reason in item.reasons],
+        "errors": [f"{item.pair_id}: {reason}" for item in validations for reason in item.reasons]
+        + integrity_errors,
     }
     envelope_paths: dict[str, str] = {}
     if valid_count == PAIR_COUNT:
@@ -2546,9 +2922,17 @@ def run_calibration(
         **final_registry_body,
         "final_pair_registry_sha256": sha256_bytes(canonical_json(final_registry_body).encode("utf-8")),
     }
-    write_json_atomic(final_pair_registry_path, final_pair_registry)
+    final_registry_record = write_json_atomic(final_pair_registry_path, final_pair_registry)
+    try:
+        _verified_artifact_record(final_pair_registry_path, final_registry_record["sha256"])
+        if not verify_self_hash(final_pair_registry, "final_pair_registry_sha256"):
+            raise PublicationError("final pair registry self-hash is invalid")
+    except Exception as exc:
+        integrity_errors.append(
+            f"final pair registry integrity failed: {type(exc).__name__}: {exc}"
+        )
     pair_measurement_path = output_root / "pair_measurements.json"
-    write_json_atomic(
+    pair_measurement_record = write_json_atomic(
         pair_measurement_path,
         {
             "schema_version": SCHEMA_VERSION,
@@ -2557,7 +2941,36 @@ def run_calibration(
             "attempts": attempts,
         },
     )
+    try:
+        _verified_artifact_record(pair_measurement_path, pair_measurement_record["sha256"])
+    except Exception as exc:
+        integrity_errors.append(
+            f"pair measurements integrity failed: {type(exc).__name__}: {exc}"
+        )
     result["pair_measurements_path"] = str(pair_measurement_path)
+    result["gates"]["integrity"] = not integrity_errors
+    if integrity_errors:
+        result["errors"].extend(item for item in integrity_errors if item not in result["errors"])
+        result["status"] = "BLOCKED"
+    artifact_records = {
+        "attempts": attempt_artifacts,
+        "run_spec": _verified_artifact_record(
+            prepared.run_spec_path,
+            sha256_file(prepared.run_spec_path),
+        ),
+        "pair_registry": _verified_artifact_record(
+            prepared.pair_registry_path,
+            sha256_file(prepared.pair_registry_path),
+        ),
+        "final_pair_registry": _verified_artifact_record(
+            final_pair_registry_path,
+            final_registry_record["sha256"],
+        ),
+        "pair_measurements": _verified_artifact_record(
+            pair_measurement_path,
+            pair_measurement_record["sha256"],
+        ),
+    }
     terminal_body = {
         "schema_version": SCHEMA_VERSION,
         "manifest_type": "m1_n0_terminal",
@@ -2572,20 +2985,30 @@ def run_calibration(
         "gates": result["gates"],
         "errors": result["errors"],
         "artifacts": {
-            "run_spec": {"path": str(prepared.run_spec_path), "sha256": sha256_file(prepared.run_spec_path)},
-            "pair_registry": {"path": str(prepared.pair_registry_path), "sha256": sha256_file(prepared.pair_registry_path)},
-            "final_pair_registry": {"path": str(final_pair_registry_path), "sha256": sha256_file(final_pair_registry_path)},
-            "attempts": [
-                {"attempt_id": item["attempt_id"], "path": item["artifact_path"], "sha256": item["artifact_sha256"]}
-                for item in attempts
-            ],
-            "pair_measurements": {"path": str(pair_measurement_path), "sha256": sha256_file(pair_measurement_path)},
-            **{name: {"path": path, "sha256": sha256_file(path)} for name, path in envelope_paths.items()},
+            **artifact_records,
+            **{
+                name: _verified_artifact_record(path, sha256_file(path))
+                for name, path in envelope_paths.items()
+            },
+        },
+        "integrity": {
+            "verified": not integrity_errors,
+            "errors": list(integrity_errors),
         },
     }
     terminal = {**terminal_body, "terminal_manifest_sha256": sha256_bytes(canonical_json(terminal_body).encode("utf-8"))}
     terminal_path = output_root / "terminal_manifest.json"
-    write_json_atomic(terminal_path, terminal)
+    terminal_record = write_json_atomic(terminal_path, terminal)
+    try:
+        _verified_artifact_record(terminal_path, terminal_record["sha256"])
+    except Exception as exc:
+        # The terminal manifest is immutable; retain a failed integrity gate
+        # in the returned result even if a filesystem readback is unavailable.
+        result["gates"]["integrity"] = False
+        result["status"] = "BLOCKED"
+        result["errors"].append(
+            f"terminal manifest integrity failed: {type(exc).__name__}: {exc}"
+        )
     result["terminal_manifest_path"] = str(terminal_path)
     return result
 
@@ -2848,6 +3271,7 @@ def build_envelopes(
         "terminal_timing_exact": all(item.discrete.get("terminal_timing_exact", False) for item in by_id.values()),
         "gripper_exact": all(item.discrete.get("gripper_exact", False) for item in by_id.values()),
         "action_exact": all(item.discrete.get("action_exact", False) for item in by_id.values()),
+        "observation_exact": all(item.discrete.get("observation_exact", False) for item in by_id.values()),
         "pair_count": PAIR_COUNT,
         "divergences": [
             {"pair_id": item.pair_id, "reasons": list(item.reasons)}
@@ -2880,15 +3304,23 @@ def _load_prepared_from_run_spec(run_spec_path: str | Path) -> PreparedRun:
     return PreparedRun(config_path, config, source_registry_path, source_registry, run_spec_target, run_spec, pair_registry_path, pair_registry, tape)
 
 
-def _worker_main(job_path: str | Path) -> int:
+def _worker_main(job_path: str | Path, result_path: str | Path | None = None) -> int:
     job = _load_document(job_path)
-    config = load_config(job["config_path"]) if job.get("config_path") else dict(job.get("config", {}))
-    registry = _load_verified_registry(job["registry_path"])
-    trace_id = str(job["trace_id"])
-    tape, _ = _load_tape(registry, config=config, trace_id=trace_id)
-    attempt = {**job, "config": config, "registry": registry, "tape": tape}
-    result = execute_attempt(attempt)
-    sys.stdout.write(canonical_json(result) + "\n")
+    target = Path(result_path) if result_path is not None else Path(job_path).with_suffix(".result.json")
+    try:
+        config = load_config(job["config_path"]) if job.get("config_path") else dict(job.get("config", {}))
+        registry = _load_verified_registry(job["registry_path"])
+        trace_id = str(job["trace_id"])
+        tape, _ = _load_tape(registry, config=config, trace_id=trace_id)
+        attempt = {**job, "config": config, "registry": registry, "tape": tape}
+        result = execute_attempt(attempt)
+    except Exception as exc:
+        result = _attempt_failure(job, exc)
+    # The result file is the only machine-readable worker channel.  stdout is
+    # intentionally a one-line frame so environment diagnostics cannot corrupt
+    # the parent-side payload parser.
+    write_json_atomic(target, result)
+    sys.stdout.write(f"M1N0_RESULT {target}\n")
     return 0 if result.get("status") == "completed" else 1
 
 
@@ -2902,6 +3334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--run-spec", type=Path)
     parser.add_argument("--job", type=Path)
+    parser.add_argument("--result", type=Path)
     args = parser.parse_args(argv)
     if args.schema_version:
         print(SCHEMA_VERSION)
@@ -2934,7 +3367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if mode == "worker":
         if args.job is None:
             parser.error("worker requires --job")
-        return _worker_main(args.job)
+        return _worker_main(args.job, args.result)
     parser.error("select prepare, run, or worker mode")
     return 2
 
