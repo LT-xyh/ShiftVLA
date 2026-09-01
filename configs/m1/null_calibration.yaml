@@ -1,0 +1,55 @@
+schema_version: 1
+name: m1_null_calibration
+config_sha256: e2ad3ce18017ba5b2d79aaf426f30b033ebd84318945a2476864bbb1cd244218
+
+# This run specification is deliberately separate from state replay.  The
+# parent freezes it before any worker is launched; workers only consume the
+# persisted source registry and action tape.
+pair_count: 20
+pair_prefix: m1n0-pair-
+output_root: runs/m1_null_calibration/20260901_task000_init000_null20
+
+registry: runtime/m1/m1_hard_gate_tape_registry.json
+registry_sha256: 092c64910b7530c6d84a98a925124879e9a96196b54d45b284a70ccfb62dd49c
+
+action_tape:
+  # SHA-256 of the exact contiguous float32 action bytes, not the .npy
+  # container bytes.
+  path: runtime/m1/tapes/libero_spatial-task000-init000.actions.npy
+  sha256: c17bc44ad8195fecb42a80b3b272828761a9df6d88dd2bafe45db01a6cb04bbf
+  shape: [82, 7]
+  dtype: float32
+
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+
+python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+runtime:
+  offline: true
+  local_only: true
+  include_policy: false
+  call_policy: false
+  call_processors: false
+  fresh_processes: true
+  retry_count: 0
+  renderer:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+
+quantity_selection:
+  # This path policy is frozen before outcomes and is applied identically to
+  # every pair/window.  Missing or inconsistent paths fail closed.
+  root_patterns: [qpos, qvel, objects, gripper_physical]
+
+renderer:
+  camera: agentview
+  observation_key: render_rgb
+
+publication:
+  atomic: true
+  no_overwrite: true
+  safe_no_pickle: true

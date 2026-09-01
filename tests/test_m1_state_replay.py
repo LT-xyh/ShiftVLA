@@ -752,6 +752,47 @@ def test_collected_invariants_include_body_poses_gripper_physical_and_reward() -
     assert invariants["reward"] == 0.25
 
 
+def test_collected_invariants_expose_all_goal_predicates_as_exact_state() -> None:
+    replay = _module()
+    events: list[str] = []
+    builder, _ = _fake_runtime_builder_factory(events)
+    adapter = replay.RuntimeAdapter.construct_fresh(
+        _fake_config(Path("/tmp")), runtime_builder=builder, tape_hash="tape"
+    )
+    adapter.inner.parsed_problem = {
+        "goal_state": [("On", "bowl", "plate"), ("Open", "gripper")]
+    }
+    adapter.inner._eval_predicate = lambda goal: goal[0] == "On"
+    invariants = adapter.collect_invariants()
+    assert invariants["predicates"] == {
+        "available": True,
+        "goals": [
+            {
+                "index": 0,
+                "expression": ["On", "bowl", "plate"],
+                "value": True,
+            },
+            {"index": 1, "expression": ["Open", "gripper"], "value": False},
+        ],
+    }
+    changed = dict(invariants)
+    changed["predicates"] = {
+        **invariants["predicates"],
+        "goals": [
+            invariants["predicates"]["goals"][0],
+            {"index": 1, "expression": ["Open", "gripper"], "value": True},
+        ],
+    }
+    predicate_results = [
+        result
+        for result in replay.compare_invariants(invariants, changed)
+        if result.path.startswith("predicates")
+    ]
+    assert predicate_results
+    assert all(result.comparison_class is replay.ComparisonClass.EXACT for result in predicate_results)
+    assert any(not result.passed for result in predicate_results)
+
+
 def test_missing_invariant_is_a_failed_closed_comparison() -> None:
     replay = _module()
     results = replay.compare_invariants({"qpos": [1.0]}, {})

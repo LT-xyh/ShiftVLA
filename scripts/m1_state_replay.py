@@ -5512,7 +5512,11 @@ def _predicate_snapshot(inner: Any) -> dict[str, Any]:
         rows.append(
             {
                 "index": index,
-                "expression": _snapshot_value(goal),
+                # Persist predicate expressions in the canonical JSON-like
+                # sequence form used by the exact-state contract.  LIBERO
+                # commonly exposes goal tuples, while the artifact schema
+                # intentionally represents them as lists.
+                "expression": list(goal) if isinstance(goal, tuple) else _snapshot_value(goal),
                 "value": bool(value),
             }
         )
@@ -6900,6 +6904,10 @@ class RuntimeAdapter:
             "counters": counters,
             "reward": reward,
             "success": self._check_success(),
+            # Goal predicates are discrete task state.  Persist every
+            # concrete predicate so paired comparisons cannot hide a goal
+            # transition behind the numeric envelope.
+            "predicates": _predicate_snapshot(self.inner),
             "observables": observable_values,
             "observable_cache": observable_cache,
             "serialized_runtime": _serialized_runtime_snapshot(
@@ -6991,6 +6999,7 @@ def compare_invariants(expected: Mapping[str, Any], actual: Mapping[str, Any]) -
     exact_roots = {
         "reward",
         "success",
+        "predicates",
         "identity",
         "controller_configuration",
         "counters.timestep",
