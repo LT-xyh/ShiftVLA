@@ -1,0 +1,5 @@
+benchmark_root: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/hf-libero/libero/libero
+bddl_files: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/hf-libero/libero/libero/bddl_files
+init_states: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/hf-libero/libero/libero/init_files
+datasets: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/datasets
+assets: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6

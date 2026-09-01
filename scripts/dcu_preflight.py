@@ -2193,21 +2193,67 @@ def _init_state_evidence(env: Any) -> dict[str, Any]:
     }
 
 
-def build_cpu_runtime(
+def _assert_environment_action_space(env: Any, action_dim: int) -> dict[str, Any]:
+    """Validate the synchronous environment action boundary without M0 imports."""
+
+    action_space = getattr(env, "action_space", None)
+    single_action_space = getattr(env, "single_action_space", None)
+    if action_space is None or single_action_space is None:
+        raise DCUPreflightError("vector environment must expose action_space and single_action_space")
+    expected_batch_shape = (int(getattr(env, "num_envs", -1)), int(action_dim))
+    if tuple(action_space.shape) != expected_batch_shape or action_space.dtype != np.dtype(np.float32):
+        raise DCUPreflightError(
+            f"vector action_space must be {expected_batch_shape} float32, "
+            f"got shape={action_space.shape}, dtype={action_space.dtype}"
+        )
+    if tuple(single_action_space.shape) != (int(action_dim),) or single_action_space.dtype != np.dtype(np.float32):
+        raise DCUPreflightError(
+            f"single_action_space must be ({int(action_dim)},) float32, "
+            f"got shape={single_action_space.shape}, dtype={single_action_space.dtype}"
+        )
+    return {
+        "batch_action_shape": list(expected_batch_shape),
+        "batch_action_dtype": "float32",
+        "single_action_shape": list(single_action_space.shape),
+        "single_action_dtype": str(single_action_space.dtype),
+    }
+
+
+def _loaded_policy_module_names() -> tuple[str, ...]:
+    """Return policy-bearing modules already visible in this process."""
+
+    names = []
+    for name in sys.modules:
+        lowered = str(name).lower()
+        if "smolvla" in lowered or lowered == "lerobot.policies" or lowered.startswith("lerobot.policies."):
+            names.append(str(name))
+    return tuple(sorted(names))
+
+
+def build_cpu_environment_runtime(
     config: Mapping[str, Any],
     *,
-    include_policy: bool = True,
     phase: str = "compare",
 ) -> dict[str, Any]:
-    """Construct the pinned vanilla LIBERO env/processors in the CPU parent."""
+    """Construct only the pinned CPU LIBERO environment.
+
+    This is the policy-free M1 boundary.  It deliberately does not inspect
+    checkpoint/base-model config and does not import policy classes or
+    LeRobot processor factories.  Policy-bearing callers use
+    :func:`build_cpu_runtime` below, while exact-state replay uses this seam.
+    """
 
     normalized_phase = _normalise_phase(phase)
     if normalized_phase == _ONE_STEP_CHILD_PHASE:
         normalized_phase = "concurrency"
     root = _ROOT
-    checkpoint = _require_mapping(config["checkpoint"], "checkpoint")
-    base_model = _require_mapping(config["base_model"], "base_model")
     task = _require_mapping(config["task"], "task")
+    policy_modules_before = set(_loaded_policy_module_names())
+    if policy_modules_before:
+        raise DCUPreflightError(
+            "environment-only M1 process already contains policy-bearing modules: "
+            + ", ".join(sorted(policy_modules_before))
+        )
     try:
         import lerobot
         import libero
@@ -2217,19 +2263,43 @@ def build_cpu_runtime(
             close_envs,
             make_env,
             make_env_config,
-            make_env_pre_post_processors,
-            preprocess_observation,
         )
-        from lerobot.policies.factory import make_policy, make_pre_post_processors
-        from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
     except Exception as exc:
         raise DCUPreflightError(f"pinned CPU runtime imports failed: {exc}") from exc
-    from scripts import m0_smoke
-
-    imported = m0_smoke._verify_runtime_module_paths(
-        root, {"lerobot": lerobot, "libero": libero, "robosuite": robosuite, "mujoco": mujoco}
-    )
+    policy_modules_after = set(_loaded_policy_module_names())
+    newly_imported_policy_modules = sorted(policy_modules_after - policy_modules_before)
+    if newly_imported_policy_modules:
+        raise DCUPreflightError(
+            "environment-only runtime imported policy-bearing modules: "
+            + ", ".join(newly_imported_policy_modules)
+        )
+    # Keep source/module path validation local to the environment-only
+    # boundary.  Importing the M0 smoke module here would pull a policy
+    # bearing module into the M1 process even though no policy is needed.
+    imported: dict[str, Any] = {"modules": {}}
+    purelib = Path(sysconfig.get_paths()["purelib"]).resolve()
+    forbidden_roots = [
+        (root / name).resolve()
+        for name in ("external/lerobot", "external/hf-libero", "external/libero", "external/robosuite", "external/mujoco")
+    ]
+    for module_name, module in (("lerobot", lerobot), ("libero", libero), ("robosuite", robosuite), ("mujoco", mujoco)):
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            raise DCUPreflightError(f"runtime module has no __file__: {module_name}")
+        module_path = Path(module_file).resolve()
+        if not module_path.is_relative_to(purelib) or any(module_path.is_relative_to(forbidden) for forbidden in forbidden_roots):
+            raise DCUPreflightError(f"runtime module escaped isolated site-packages: {module_name} -> {module_path}")
+        origin = getattr(getattr(module, "__spec__", None), "origin", None)
+        imported["modules"][module_name] = {
+            "__file__": str(module_path),
+            "__spec__.origin": str(Path(origin).resolve()) if origin and origin != "built-in" else origin,
+        }
+    imported["purelib"] = str(purelib)
+    imported["policy_import_audit"] = {
+        "before": sorted(policy_modules_before),
+        "after": sorted(policy_modules_after),
+        "new": newly_imported_policy_modules,
+    }
     task_source = _task_source_evidence(libero, task, root)
     env_cfg = make_env_config(
         "libero",
@@ -2251,7 +2321,7 @@ def build_cpu_runtime(
     env = envs[str(task["suite"])][int(task["task_id"])]
     if int(getattr(env, "num_envs", -1)) != EXPECTED_N_ENVS:
         raise DCUPreflightError("CPU runtime must expose exactly one synchronous environment")
-    action_space = m0_smoke._assert_action_space(env, EXPECTED_ACTION_DIM)
+    action_space = _assert_environment_action_space(env, EXPECTED_ACTION_DIM)
     max_steps = int(env.call("_max_episode_steps")[0])
     if max_steps != EXPECTED_HORIZON:
         raise DCUPreflightError(f"LIBERO horizon must be {EXPECTED_HORIZON}, got {max_steps}")
@@ -2261,6 +2331,49 @@ def build_cpu_runtime(
         "horizon": max_steps,
         "init_state_id_evidence": init_state,
     }
+
+    return {
+        "lerobot": lerobot,
+        "libero": libero,
+        "mujoco": mujoco,
+        "robosuite": robosuite,
+        "env_cfg": env_cfg,
+        "envs": envs,
+        "env": env,
+        "close_envs": close_envs,
+        "action_space": action_space,
+        "max_steps": max_steps,
+        "task": task_evidence,
+        "init_state_id_evidence": init_state,
+        "runtime_imports": imported,
+        "phase": normalized_phase,
+    }
+
+
+def build_cpu_runtime(
+    config: Mapping[str, Any],
+    *,
+    include_policy: bool = True,
+    phase: str = "compare",
+) -> dict[str, Any]:
+    """Construct the pinned vanilla LIBERO env and optional policy stack."""
+
+    normalized_phase = _normalise_phase(phase)
+    if normalized_phase == _ONE_STEP_CHILD_PHASE:
+        normalized_phase = "concurrency"
+    checkpoint = _require_mapping(config["checkpoint"], "checkpoint")
+    base_model = _require_mapping(config["base_model"], "base_model")
+    environment_runtime = build_cpu_environment_runtime(config, phase=normalized_phase)
+    env_cfg = environment_runtime["env_cfg"]
+    lerobot = environment_runtime["lerobot"]
+    env = environment_runtime["env"]
+    try:
+        from lerobot.envs import make_env_pre_post_processors, preprocess_observation
+        from lerobot.policies.factory import make_policy, make_pre_post_processors
+        from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+    except Exception as exc:
+        raise DCUPreflightError(f"pinned CPU policy imports failed: {exc}") from exc
 
     policy_cfg = SmolVLAConfig.from_pretrained(
         str(Path(str(checkpoint["path"])).resolve()),
@@ -2318,13 +2431,7 @@ def build_cpu_runtime(
         postprocessor_overrides={"device_processor": {"device": "cpu"}},
     )
     return {
-        "lerobot": lerobot,
-        "libero": libero,
-        "mujoco": mujoco,
-        "robosuite": robosuite,
-        "env_cfg": env_cfg,
-        "envs": envs,
-        "env": env,
+        **environment_runtime,
         "policy_cfg": policy_cfg,
         "policy": policy,
         "env_preprocessor": env_preprocessor,
@@ -2332,12 +2439,6 @@ def build_cpu_runtime(
         "preprocessor": preprocessor,
         "postprocessor": postprocessor,
         "preprocess_observation": preprocess_observation,
-        "close_envs": close_envs,
-        "action_space": action_space,
-        "max_steps": max_steps,
-        "task": task_evidence,
-        "init_state_id_evidence": init_state,
-        "runtime_imports": imported,
         "model": model_evidence,
         "phase": normalized_phase,
     }
@@ -4432,6 +4533,7 @@ __all__ = [
     "PATCH_PATH",
     "build_worker_environment",
     "build_cpu_child_environment",
+    "build_cpu_environment_runtime",
     "build_concurrency_child_command",
     "build_cpu_runtime",
     "compare_outputs",

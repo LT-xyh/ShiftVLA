@@ -1,0 +1,298 @@
+schema_version: 1
+name: state_replay
+
+# Frozen M1 task identity.  This pilot never changes task, initial state, or
+# environment seed through a command-line override.
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+
+# The official CPU factory reads these identities while building its
+# environment/policy configuration even when include_policy=false.  M1 never
+# loads checkpoint weights or calls the policy/processors.
+obs_type: pixels_agent_pos
+checkpoint:
+  repo_id: HuggingFaceVLA/smolvla_libero
+  revision: 6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  path: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/artifacts/smolvla_libero/6721902bc4d61e50a3bfdb11dfb4cb626f05d102
+  sha256: 71d9563c8295284acba8fc2d5c19de000d6fe9ba58a406832af7ef3d221ed52f
+base_model:
+  repo_id: HuggingFaceTB/SmolVLM2-500M-Instruct
+  revision: 7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  path: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/artifacts/smolvlm2-500m-instruct/7b375e1b73b11138ff12fe22c8f2822d8fe03467
+  sha256: b9bfd456c9472c0acd5719d6e514c4b859891af205ee1a736552fd3497b8b0c3
+assets:
+  repo_id: lerobot/libero-assets
+  revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  path: /public/home/xuyinghao/workspace/vla/ShiftVLA/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  manifest_path: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/manifests/m0_preflight_b_artifacts.json
+  manifest_sha256: 1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85
+libero_config:
+  path: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config/config.yaml
+  sha256: 3794964a45a33c0d545118d3c44064bae497931eadd14cb26974008cdd3b55af
+
+action_tape:
+  algorithm: numpy.Generator
+  bit_generator: PCG64
+  seed: 12027
+  shape: [110, 7]
+  dtype: float32
+  arm_low: -0.2
+  arm_high: 0.2
+  gripper_block_steps: 10
+  gripper_values: [-1.0, 1.0]
+  zero_orientation_steps: [11, 51, 101]
+  # SHA-256 of the raw C-order float32 action bytes.
+  sha256: f4dc4b2e2c17be7177a897a1a1ae4111aa777c10517f3eeab007c1099a1b0c1c
+
+capture_steps: [10, 50, 100]
+future_steps: 10
+restores_per_capture: 3
+source_steps: 110
+
+tolerances:
+  rtol: 0.0
+  atol: 1.0e-12
+
+paths:
+  config: configs/m1/state_replay.yaml
+  # SHA-256 of canonical parsed YAML with this self-referential field removed.
+  config_sha256: 730aff4a41fd91fb837102ca5f363a4a142bf7010140f5176940700f1d1fd5f0
+  action_tape: action_tape.npy
+  output_root: runs/m1_state_replay
+  cpu_python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+  official_factory: scripts.dcu_preflight.build_cpu_runtime
+  runtime_lock: runtime/locks/shiftvla-libero-runtime.txt
+  runtime_lock_sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
+  artifact_manifest: runtime/manifests/m0_preflight_b_artifacts.json
+  artifact_manifest_sha256: 1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85
+  bddl: external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
+  init_state: external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init
+  source_evidence:
+    libero_env_wrapper: external/hf-libero/libero/libero/envs/env_wrapper.py
+    lerobot_libero: external/lerobot/src/lerobot/envs/libero.py
+    robosuite_base: external/robosuite/robosuite/environments/base.py
+    controller_base: external/robosuite/robosuite/controllers/base_controller.py
+    osc: external/robosuite/robosuite/controllers/osc.py
+    panda_gripper: external/robosuite/robosuite/models/grippers/panda_gripper.py
+    bddl_base_domain: external/hf-libero/libero/libero/envs/bddl_base_domain.py
+  source_evidence_sha256:
+    libero_env_wrapper: a782fb76c9792268d28979474fe72849e1e98ada49c8e997a65359a8d6b6acd0
+    lerobot_libero: 97c984f12331527626812ec19967ef399e545535b3571becf044db2417ae9d71
+    robosuite_base: 16a044bf28cd39623c286d72f8be2f3789d53e215d77bef3b88ca33511c87687
+    controller_base: 6dc278b614e78d8c3e7656b430c59cc600c42fcd1db0f4293bea1bf4925541dd
+    osc: a5887a950f53c16c67874c1e4f2ea6919dc0d0e5d1b618c15c699bd84e269477
+    panda_gripper: 1c395d5ab96d097aa95e4542981901a6d54609d27fb72217788a7e63167052f5
+    bddl_base_domain: 4f4da47dd241ac6590d66c7559d76e44b68669924207f53143ca3a4962921f24
+
+# Every external source is audited at run start: the checkout must be clean,
+# detached at the recorded commit, and point at the recorded upstream URL.
+source_checkouts:
+  libero:
+    path: external/hf-libero
+    git_sha: 8561c60eea2fb93096146f240194649df73d8b1e
+    clean: true
+    detached: true
+    url: https://github.com/huggingface/LIBERO.git
+  lerobot:
+    path: external/lerobot
+    git_sha: 7e241bd630a3719a56157a497ce5d08f244784f1
+    clean: true
+    detached: true
+    url: https://github.com/huggingface/lerobot.git
+  robosuite:
+    path: external/robosuite
+    git_sha: fbee5844ff5632f5b5698e204ec5357ca50be0df
+    clean: true
+    detached: true
+    url: https://github.com/ARISE-Initiative/robosuite.git
+  mujoco:
+    path: external/mujoco
+    git_sha: 72cb2b210da666617924de709406d6aadbe60c71
+    clean: true
+    detached: true
+    url: https://github.com/google-deepmind/mujoco.git
+
+worktree_audit:
+  timing: pre_output
+  allowed_output_root: runs/m1_state_replay
+  implementation_paths:
+    - scripts/m1_state_replay.py
+    - configs/m1/state_replay.yaml
+    - tests/test_m1_state_replay.py
+    - docs/m1_state_replay.md
+    - docs/superpowers/plans/2026-08-30-m1-exact-state-replay.md
+
+runtime:
+  offline: true
+  local_only: true
+  include_policy: false
+  call_policy: false
+  call_processors: false
+  use_async_envs: false
+  n_envs: 1
+  controller_class: OperationalSpaceController
+  gripper_class: PandaGripper
+  sleeping: false
+  environment:
+    LIBERO_CONFIG_PATH: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config
+    HF_HOME: /public/home/xuyinghao/tmp/shiftvla-empty-hf-home-g
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+    empty_hf_cache: true
+  renderer:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+    expected_gl:
+      vendor: Mesa/X.org
+      renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+      version: 3.1 Mesa 21.1.5
+
+pins:
+  lerobot_git_sha: 7e241bd630a3719a56157a497ce5d08f244784f1
+  libero_git_sha: 8561c60eea2fb93096146f240194649df73d8b1e
+  robosuite_git_sha: fbee5844ff5632f5b5698e204ec5357ca50be0df
+  mujoco_git_sha: 72cb2b210da666617924de709406d6aadbe60c71
+  python: 3.12.6
+  pytorch: 2.11.0+cpu
+  transformers: 5.5.4
+  numpy: 2.2.6
+  gymnasium: 1.3.0
+  mujoco: 3.7.0
+  lerobot: 0.6.1
+  robosuite: 1.4.0
+  hf_libero: 0.1.4
+  cuda: none
+  gpu: CPU
+
+m0_closure_sha256: 1daf4b2d69b482c5b3110db283cb79a0fc74424a
+m0_closure:
+  path: runs/m0_baseline_a/20260830T023451Z_655986_c2f3caa5/run_manifest.json
+  sha256: 1daf4b2d69b482c5b3110db283cb79a0fc74424a
+trajectory_id: libero_spatial-task000-init000
+strict_provenance: true
+init_state_id_evidence: 0
+
+hashes:
+  bddl:
+    path: external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
+    sha256: 9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b
+  init_state:
+    path: external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init
+    sha256: cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a
+
+state_classification:
+  source: docs/m1_state_replay.md
+  unknown_mutable_state: fail_closed
+
+state_audit:
+  # These four categories are source-design templates.  The runtime manifest
+  # publishes only concrete owner paths and their serialization_coverage rows.
+  reachable_fields:
+    - action_tape.algorithm_config_hash
+    - bddl.xml.assets.pins
+    - comparison.schema_tolerances
+    - controller.configuration_gains
+    - controller.goal_ori
+    - controller.goal_pos
+    - controller.initial_joint
+    - controller.kinematic_caches
+    - controller.new_update
+    - env.cur_time
+    - env.done
+    - env.timestep
+    - eef.pose
+    - fixture.model.body_pos
+    - fixture.model.body_quat
+    - gripper.current_action
+    - identity.action_tape_sha256
+    - identity.instruction
+    - identity.source_step
+    - identity.task
+    - mjdata.contacts
+    - mjdata.integration
+    - mjdata.kinematics
+    - model.layout
+    - model.ordered_names_dims
+    - objects.joints
+    - objects.pose
+    - observables.values
+    - observable.timers_cache
+    - policy.processors.noise
+    - post_reset.rng
+    - renderer.configuration
+    - robot.recent_buffers
+    - task.instruction
+    - task0.visual_state
+    - viewer.internals
+  classification:
+    SERIALIZED:
+      - mjdata.integration
+      - fixture.model.body_pos
+      - fixture.model.body_quat
+      - env.timestep
+      - env.cur_time
+      - env.done
+      - controller.initial_joint
+      - controller.goal_pos
+      - controller.goal_ori
+      - controller.new_update
+      - gripper.current_action
+      - identity.task
+      - identity.instruction
+      - identity.source_step
+      - identity.action_tape_sha256
+      - observable.timers_cache
+    DERIVED/RECONSTRUCTED:
+      - mjdata.kinematics
+      - mjdata.contacts
+      - eef.pose
+      - objects.pose
+      - objects.joints
+      - controller.kinematic_caches
+      - observables.values
+      - task0.visual_state
+    IMMUTABLE:
+      - task.instruction
+      - bddl.xml.assets.pins
+      - model.layout
+      - model.ordered_names_dims
+      - controller.configuration_gains
+      - renderer.configuration
+      - action_tape.algorithm_config_hash
+      - comparison.schema_tolerances
+    PROVEN UNUSED:
+      - policy.processors.noise
+      - robot.recent_buffers
+      - viewer.internals
+      - post_reset.rng
+
+post_process_guard:
+  enabled: true
+  allowlist: [model.site_rgba, vis_site_names]
+
+publication:
+  no_overwrite: true
+  atomic: true
+  terminal_manifest_on_exit: true
+
+# AGENTS.md was already user-modified before this M1 revision.  Keep its
+# evidence separate from immutable source/artifact inputs.
+allowed_dirty_evidence:
+  agents_guidance:
+    path: AGENTS.md
+    sha256: 956a88bf24253c7120be85ec5b446771e60ff9cac95b7932e7a10d5e3c5fc5d8
+    reason: pre-existing user-owned workspace guidance
+  m0_raw_evidence:
+    path: runs/m0_baseline_a
+    sha256: 91501f4a017a0d5a633f8ccd0ac2878b8d33209d809f0e1cdecf19d439135384
+    reason: pre-existing raw M0 retention evidence

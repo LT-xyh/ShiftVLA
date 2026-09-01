@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "trace_id": "libero_spatial-task000-init000",
+  "source_only": true,
+  "detector": "RuntimeAdapter.collect_invariants over persisted M0 actions",
+  "windows": [
+    {
+      "regimes": ["free_motion"],
+      "capture_offset": 1,
+      "continuation_horizon": 10,
+      "evidence": {"robot_contact_pairs": 0, "object_motion": "stationary"}
+    },
+    {
+      "regimes": ["pre_contact"],
+      "capture_offset": 33,
+      "continuation_horizon": 10,
+      "evidence": {"robot_contact_pairs": 0, "first_contact_step": 44}
+    },
+    {
+      "regimes": ["contact"],
+      "capture_offset": 43,
+      "continuation_horizon": 10,
+      "evidence": {"first_robot_contact_step": 44}
+    },
+    {
+      "regimes": ["grasp"],
+      "capture_offset": 49,
+      "continuation_horizon": 10,
+      "evidence": {"robot_contact_pairs": "sustained", "gripper_state": [-1.0, 1.0]}
+    },
+    {
+      "regimes": ["carried"],
+      "capture_offset": 54,
+      "continuation_horizon": 10,
+      "evidence": {"object_motion": "nonzero", "object": "akita_black_bowl_1"}
+    },
+    {
+      "regimes": ["release"],
+      "capture_offset": 80,
+      "continuation_horizon": 2,
+      "terminal_reason": "predicate_transition",
+      "legal_terminal_step": 82,
+      "evidence": {"gripper_open_transition_step": 81, "robot_contact_pairs": "decreasing"}
+    },
+    {
+      "regimes": ["predicate_transition"],
+      "capture_offset": 81,
+      "continuation_horizon": 1,
+      "terminal_reason": "predicate_transition",
+      "legal_terminal_step": 82,
+      "evidence": {"success_transition_step": 82, "synchronous_terminal": true}
+    }
+  ]
+}

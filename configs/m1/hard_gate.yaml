@@ -1,0 +1,93 @@
+schema_version: 1
+name: m1_exact_mid_trajectory_hard_gate
+authoritative: true
+strict_provenance: true
+
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+obs_type: pixels_agent_pos
+
+registry: runtime/m1/m1_hard_gate_tape_registry.json
+source_coverage: runtime/m1/source_coverage_task000_init000.json
+terminal_manifest: runtime/m1/m1_terminal_manifest.json
+
+corpus:
+  primary_trace: libero_spatial-task000-init000
+  preregistered_supplements:
+    - libero_spatial-task000-init003
+    - libero_spatial-task000-init004
+  selection: primary_always_then_minimum_source_coverage_set
+  tie_break: lexical_episode_id
+  required_regimes:
+    - free_motion
+    - pre_contact
+    - contact
+    - grasp
+    - carried
+    - release
+    - predicate_transition
+
+null_calibration:
+  minimum_complete_duplicate_control_runs: 20
+  minimum_runs_per_selected_trace: 5
+  minimum_runs_per_regime: 5
+  group_key: [regime, quantity, horizon]
+  contact_rich_regimes: [contact, grasp, carried]
+  global_tolerance: null
+  renderer_group_key: [camera, observation_key, regime, horizon]
+  exact_rgb_when_null_bitwise: true
+
+restore_protocol:
+  same_process_per_stage: 3
+  fresh_process_per_stage: 3
+  default_continuation_horizon: 10
+  allow_synchronous_short_terminal: true
+  retry_count: 0
+  forbid_after_restore:
+    - reset
+    - set_init_state
+    - settle
+    - dummy_action
+    - autoreset
+    - policy_import
+    - policy_inference
+    - tape_regeneration
+
+runtime:
+  offline: true
+  local_only: true
+  include_policy: false
+  call_policy: false
+  call_processors: false
+  use_async_envs: false
+  n_envs: 1
+  controller_class: OperationalSpaceController
+  gripper_class: PandaGripper
+  sleeping: false
+  environment:
+    LIBERO_CONFIG_PATH: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config
+    HF_HOME: /public/home/xuyinghao/tmp/shiftvla-empty-hf-home-g
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+    empty_hf_cache: true
+  renderer:
+    camera: agentview
+    observation_key: render_rgb
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+
+publication:
+  no_overwrite: true
+  atomic: true
+  terminal_manifest_on_exit: true
+  stop_after_m1: true
