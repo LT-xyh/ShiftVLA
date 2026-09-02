@@ -60,6 +60,16 @@ FLOATING_RTOL = 0.0
 FLOATING_ATOL = 1.0e-12
 INTEGRATION_SPEC_NAME = "mjSTATE_INTEGRATION"
 POST_PROCESS_ALLOWLIST = frozenset(("vis_site_names", "model.site_rgba"))
+POST_CONSTRUCTION_FORBIDDEN_OPERATIONS = (
+    "restore",
+    "capture",
+    "policy_calls",
+    "processor_calls",
+    "retry",
+    "post_terminal_step",
+    "dummy_action",
+    "autoreset",
+)
 
 # These values are duplicated in the checked-in YAML on purpose.  Validation
 # compares both copies so an edited config cannot promote a different source,
@@ -5580,6 +5590,13 @@ class RuntimeAdapter:
         self.rgb_records: dict[str, dict[str, Any]] = {}
         self.gl_identity: dict[str, str] | None = None
         self.post_process_proof: dict[str, Any] = {}
+        # These counters are owned by the adapter, so a zero is an observed
+        # call-site fact rather than a synthetic assertion made by a caller.
+        # Construction provenance snapshots them before any restore/capture
+        # operation can occur.
+        self.post_construction_operation_counts: dict[str, int] = {
+            name: 0 for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS
+        }
         self.state_classification = validate_state_classification(DEFAULT_STATE_CLASSIFICATION)
         self.runtime_audit: dict[str, Any] = {}
         configured_allowlist = self.config.get("post_process_guard", {}).get("allowlist") if isinstance(
@@ -6076,7 +6093,11 @@ class RuntimeAdapter:
             # by one after the selected initial state is applied.  Capture the
             # pre-reset selection before invoking the one seeded reset.
             selected_pre_reset = int(getattr(selected_env, "init_state_id", requested_init_state))
-            cls._construction_reset_target(selected_env, config)
+            construction_counter_before = {
+                name: cls._read_construction_counter(selected_env, name)
+                for name in ("set_init_state_calls", "settle_calls")
+            }
+            reset_result = cls._construction_reset_target(selected_env, config)
             adapter = cls(
                 runtime,
                 config=config,
@@ -6117,6 +6138,12 @@ class RuntimeAdapter:
                     if observed_post_cursor is None or observed_post_cursor == selected_pre_reset
                     else observed_post_cursor,
                 },
+                "construction": cls._construction_provenance(
+                    selected_env,
+                    reset_result=reset_result,
+                    counter_before=construction_counter_before,
+                    post_construction_counts=adapter.post_construction_operation_counts,
+                ),
             }
             adapter._runtime_audit()
             return adapter
@@ -6138,6 +6165,95 @@ class RuntimeAdapter:
                     f"fresh environment cleanup failed: {type(cleanup).__name__}: {cleanup}"
                 )
             raise
+
+    @staticmethod
+    def _read_construction_counter(target: Any, name: str) -> int | None:
+        value = getattr(target, name, None)
+        if isinstance(value, (bool, np.bool_)):
+            return None
+        try:
+            integer = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return integer if integer >= 0 else None
+
+    @classmethod
+    def _construction_operation_evidence(
+        cls,
+        target: Any,
+        name: str,
+        *,
+        before: int | None,
+        allowed: bool,
+    ) -> dict[str, Any]:
+        after = cls._read_construction_counter(target, name)
+        if before is not None and after is not None and after >= before:
+            return {
+                "allowed": allowed,
+                "observed": True,
+                "count": after - before,
+                "source": f"{type(target).__name__}.{name}",
+            }
+        return {
+            "allowed": allowed,
+            "observed": False,
+            "count": None,
+            "source": f"{type(target).__name__}.{name}:counter_unavailable",
+        }
+
+    @classmethod
+    def _construction_provenance(
+        cls,
+        target: Any,
+        *,
+        reset_result: Any,
+        counter_before: Mapping[str, int | None],
+        post_construction_counts: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        forbidden: dict[str, dict[str, Any]] = {}
+        for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS:
+            value = post_construction_counts.get(name)
+            observed = (
+                not isinstance(value, (bool, np.bool_))
+                and isinstance(value, (int, np.integer))
+                and int(value) >= 0
+            )
+            forbidden[name] = {
+                "allowed": False,
+                "observed": observed,
+                "count": int(value) if observed else None,
+                "source": "RuntimeAdapter.post_construction_operation_counts",
+            }
+        return {
+            "phase": "construction",
+            "reset_result_type": type(reset_result).__name__,
+            "operations": {
+                "reset": {
+                    "allowed": True,
+                    "observed": True,
+                    "count": 1,
+                    "source": "RuntimeAdapter.construct_fresh._construction_reset_target",
+                },
+                "set_init_state": cls._construction_operation_evidence(
+                    target,
+                    "set_init_state_calls",
+                    before=counter_before.get("set_init_state_calls"),
+                    allowed=True,
+                ),
+                "settle": cls._construction_operation_evidence(
+                    target,
+                    "settle_calls",
+                    before=counter_before.get("settle_calls"),
+                    allowed=True,
+                ),
+            },
+            "post_construction_forbidden": forbidden,
+        }
+
+    def _record_post_construction_operation(self, name: str) -> None:
+        if name not in self.post_construction_operation_counts:
+            raise M1RuntimeError(f"unknown post-construction operation: {name}")
+        self.post_construction_operation_counts[name] += 1
 
     @staticmethod
     def _construction_reset_target(target: Any, config: Mapping[str, Any]) -> Any:
@@ -6216,6 +6332,7 @@ class RuntimeAdapter:
         return raw
 
     def capture(self, *, source_step: int | None = None) -> ReplayState:
+        self._record_post_construction_operation("capture")
         if source_step is None:
             source_step = self.step_count
         owner_audit = self._owner_audit_for_serialized(refresh=True)
@@ -6577,6 +6694,7 @@ class RuntimeAdapter:
     ) -> dict[str, Any]:
         if self._restore_in_progress:
             raise M1RuntimeError("nested restore is not allowed")
+        self._record_post_construction_operation("restore")
         self._restore_in_progress = True
         try:
             strict_restore = bool(

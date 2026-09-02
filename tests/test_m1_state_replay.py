@@ -1371,6 +1371,25 @@ def test_reset_provenance_separates_requested_init_state_from_post_reset_cursor(
     assert adapter.reset_provenance["post_reset_timestep"] == 0
 
 
+def test_reset_provenance_publishes_allowed_construction_phase_separately() -> None:
+    replay = _module()
+    events: list[str] = []
+    builder, _ = _fake_runtime_builder_factory(events)
+    adapter = replay.RuntimeAdapter.construct_fresh(
+        _fake_config(Path("/tmp")), runtime_builder=builder, tape_hash="tape"
+    )
+    construction = adapter.reset_provenance["construction"]
+    assert construction["phase"] == "construction"
+    assert construction["operations"]["reset"]["allowed"] is True
+    assert construction["operations"]["reset"]["observed"] is True
+    assert construction["operations"]["reset"]["count"] == 1
+    assert construction["operations"]["set_init_state"]["allowed"] is True
+    assert construction["operations"]["settle"]["allowed"] is True
+    assert "dummy_action" not in construction["operations"]
+    assert construction["post_construction_forbidden"]["restore"]["count"] == 0
+    assert construction["post_construction_forbidden"]["restore"]["observed"] is True
+
+
 def test_terminal_manifest_survives_source_close_failure(tmp_path: Path) -> None:
     replay = _module()
     events: list[str] = []

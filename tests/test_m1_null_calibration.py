@@ -285,6 +285,59 @@ def test_pair_validation_requires_distinct_processes_and_zero_forbidden_protocol
     assert any("restore" in reason for reason in invalid.reasons)
 
 
+def test_protocol_counter_publication_includes_every_forbidden_operation() -> None:
+    calibration = _module()
+
+    class Adapter:
+        pass
+
+    counters = calibration._protocol_counters(
+        Adapter(),
+        {
+            "actions_executed": 82,
+            "step_calls": 82,
+            "render_calls": 82,
+            "invariant_collections": 82,
+            "post_terminal_steps": 0,
+        },
+        82,
+    )
+    assert set(calibration.FORBIDDEN_PROTOCOL_FIELDS) <= set(counters)
+    assert all(counters[name] == 0 for name in calibration.FORBIDDEN_PROTOCOL_FIELDS)
+
+
+def test_default_process_runner_reads_dedicated_result_when_stdout_has_runtime_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibration = _module()
+    attempt = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+        "output_root": str(tmp_path),
+        "python": sys.executable,
+    }
+    worker_payload = {"status": "failed", "error": "preserved worker failure"}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        result_path = Path(command[command.index("--result") + 1])
+        calibration.write_json_atomic(result_path, worker_payload)
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="Creating LIBERO envs | suites=['libero_spatial']\n",
+            stderr="construction diagnostic\n",
+        )
+
+    monkeypatch.setattr(calibration.subprocess, "run", fake_run)
+    result = calibration._default_process_runner(attempt)
+    assert result["status"] == "failed"
+    assert result["error"] == "preserved worker failure"
+    assert result["worker_transport"]["result"]["path"].endswith(".result.json")
+    assert result["worker_transport"]["stdout"]["size"] > 0
+    assert result["worker_transport"]["stderr"]["size"] > 0
+
+
 def test_worker_executes_once_from_step_one_stops_at_terminal_and_never_restores() -> None:
     calibration = _module()
     class FakeAdapter:
@@ -296,7 +349,10 @@ def test_worker_executes_once_from_step_one_stops_at_terminal_and_never_restores
         def step(self, action: np.ndarray) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
             self.steps.append(np.asarray(action).copy())
             terminal = len(self.steps) == 82
-            return {"step": len(self.steps)}, 0.0, terminal, False, {"termination_reason": "predicate_transition"} if terminal else {}
+            return {"step": len(self.steps)}, 0.0, terminal, False, {
+                "termination_reason": "predicate_transition",
+                "is_success": terminal,
+            } if terminal else {}
         def capture(self, *args: Any, **kwargs: Any) -> None:
             self.capture_calls += 1
             raise AssertionError("capture is forbidden")
@@ -337,6 +393,199 @@ def test_worker_executes_once_from_step_one_stops_at_terminal_and_never_restores
     assert adapter.restore_calls == 0
     assert result["protocol"]["post_terminal_steps"] == 0
     assert result["terminal"]["step"] == 82
+
+
+def test_terminal_without_step_reason_derives_frozen_predicate_transition_and_keeps_m0_reason() -> None:
+    calibration = _module()
+
+    class FakeAdapter:
+        # M0 records the wrapper's generic terminal reason.  The null worker
+        # must retain it while deriving the frozen semantic reason.
+        last_termination_reason = "environment_termination"
+
+        def __init__(self) -> None:
+            self.steps = 0
+
+        def step(self, action: np.ndarray) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+            self.steps += 1
+            return {"observation": {"pixels": {"image": np.zeros((2, 2, 3), dtype=np.uint8)}},
+                    "terminated": self.steps == 82,
+                    "truncated": False,
+                    "info": {"is_success": self.steps == 82}}, 0.0, self.steps == 82, False, {"is_success": self.steps == 82}
+
+        def collect_invariants(self) -> dict[str, Any]:
+            return _snapshot(self.steps)["invariants"]
+
+        def render_rgb(self) -> np.ndarray:
+            return _snapshot(self.steps)["renderer"]
+
+        def close(self) -> None:
+            return None
+
+    result = calibration.execute_attempt(
+        {
+            "attempt_id": "m1n0-pair-000-A",
+            "pair_id": "m1n0-pair-000",
+            "side": "A",
+            "trace_id": "trace",
+            "config": {
+                "task": dict(calibration.TASK),
+                "terminal_contract": dict(calibration.DEFAULT_TERMINAL_CONTRACT),
+            },
+            "registry": {
+                "traces": [{
+                    "trace_id": "trace",
+                    "windows": [{
+                        "window_id": "predicate_transition",
+                        "regimes": ["predicate_transition"],
+                        "capture_offset": 81,
+                        "continuation_horizon": 1,
+                        "source_coverage": {"regimes": ["predicate_transition"]},
+                    }],
+                }],
+            },
+            "tape": np.zeros((82, 7), dtype=np.float32),
+        },
+        adapter_factory=lambda _config: FakeAdapter(),
+    )
+    assert result["status"] == "completed"
+    terminal = result["terminal"]
+    assert terminal["termination_reason"] == "predicate_transition"
+    assert terminal["raw_termination_reason"] == "environment_termination"
+    assert terminal["official_evidence"]["raw_reason"] == "environment_termination"
+    assert terminal["official_evidence"]["semantic_derivation"]["predicate_transition"] is True
+
+
+def test_close_exception_marks_completed_attempt_failed_and_publishes_close_evidence() -> None:
+    calibration = _module()
+
+    class FailingCloseAdapter:
+        def __init__(self) -> None:
+            self.steps = 0
+
+        def step(self, action: np.ndarray) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+            self.steps += 1
+            terminal = self.steps == 82
+            return _snapshot(self.steps), 0.0, terminal, False, {
+                "termination_reason": "predicate_transition" if terminal else None,
+                "is_success": terminal,
+            }
+
+        def collect_invariants(self) -> dict[str, Any]:
+            return _snapshot(self.steps)["invariants"]
+
+        def render_rgb(self) -> np.ndarray:
+            return _snapshot(self.steps)["renderer"]
+
+        def close(self) -> None:
+            raise RuntimeError("close exploded")
+
+    result = calibration.execute_attempt(
+        {
+            "attempt_id": "m1n0-pair-000-A",
+            "pair_id": "m1n0-pair-000",
+            "side": "A",
+            "trace_id": "trace",
+            "config": {"task": dict(calibration.TASK)},
+            "registry": {
+                "traces": [{
+                    "trace_id": "trace",
+                    "windows": [{
+                        "window_id": "free_motion",
+                        "regimes": ["free_motion"],
+                        "capture_offset": 1,
+                        "continuation_horizon": 1,
+                        "source_coverage": {"regimes": ["free_motion"]},
+                    }],
+                }],
+            },
+            "tape": np.zeros((82, 7), dtype=np.float32),
+        },
+        adapter_factory=lambda _config: FailingCloseAdapter(),
+    )
+    assert result["status"] == "failed"
+    assert result["close_evidence"]["attempted"] is True
+    assert result["close_evidence"]["success"] is False
+    assert result["close_evidence"]["source"] == "adapter.close"
+    assert "close exploded" in result["close_evidence"]["error"]
+    assert "close exploded" in result["error"]
+
+
+def test_renderer_rejects_non_agentview_direct_output_and_unknown_official_rgb_key() -> None:
+    calibration = _module()
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+    with pytest.raises(calibration.NullCalibrationError, match="agentview"):
+        calibration._renderer_images(
+            {"renderer": image}, camera="sideview", configured_key="side_rgb", strict=True
+        )
+    with pytest.raises(calibration.NullCalibrationError, match="camera|RGB|unknown"):
+        calibration._renderer_images(
+            {"raw_observation": {"pixels": {"mystery_rgb": image}}}, strict=True
+        )
+
+
+def test_renderer_maps_official_rgb_keys_to_true_views() -> None:
+    calibration = _module()
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+    images = calibration._renderer_images(
+        {
+            "renderer": image,
+            "raw_observation": {"pixels": {"image": image, "image2": image}},
+        },
+        camera="agentview",
+        configured_key="render_rgb",
+        strict=True,
+    )
+    assert calibration._renderer_camera_for_key("render_rgb") == "agentview"
+    assert calibration._renderer_camera_for_key("pixels.image") == "agentview"
+    assert calibration._renderer_camera_for_key("pixels.image2") == "robot0_eye_in_hand"
+
+
+def test_contact_and_carried_evidence_may_begin_at_h1_but_is_required_in_window() -> None:
+    calibration = _module()
+    contact_h0 = _snapshot(43, contact=False)
+    contact_h1 = _snapshot(44, contact=True)
+    contact = calibration._independent_evidence(
+        "contact", contact_h0, contact_h1, action=np.zeros(7, dtype=np.float32), history=[contact_h0, contact_h1]
+    )
+    assert contact["contact"]["present"] is True
+
+    carried_h0 = _snapshot(54, contact=True)
+    carried_h1 = _snapshot(55, contact=True)
+    carried_h1["invariants"]["objects"]["target"]["body_pos"] = np.asarray(
+        [0.25, 0.0, 0.0], dtype=np.float64
+    )
+    carried = calibration._independent_evidence(
+        "carried", carried_h0, carried_h1, action=np.zeros(7, dtype=np.float32), history=[carried_h0, carried_h1]
+    )
+    assert carried["carried"]["present"] is True
+
+
+def test_contact_evidence_is_bound_to_frozen_target_object() -> None:
+    calibration = _module()
+    snapshot = _snapshot(44, contact=True)
+    snapshot["invariants"]["objects"] = {
+        "akita_black_bowl_1": {
+            "body_pos": np.asarray([0.0, 0.0, 0.0], dtype=np.float64),
+            "body_quat": np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            "joints": {},
+        },
+        "other_object": {
+            "body_pos": np.asarray([0.1, 0.0, 0.0], dtype=np.float64),
+            "body_quat": np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            "joints": {},
+        },
+    }
+    snapshot["invariants"]["contacts"] = [("robot_finger", "other_object_geom", 0.0)]
+    assert calibration._actual_robot_object_contact(snapshot) is False
+
+
+def test_window_evidence_checks_continuation_for_h1_onset() -> None:
+    calibration = _module()
+    h0 = _snapshot(43, contact=False)
+    h1 = _snapshot(44, contact=True)
+    requirements = calibration._window_regime_requirements("contact", [h0, h1])
+    assert requirements["contact"] is True
 
 
 def test_grouped_envelopes_split_exact_semantics_from_floating_and_renderer_metrics() -> None:
@@ -458,7 +707,7 @@ def test_execute_attempt_records_real_proc_identity_and_recursive_observation_me
             }
 
         def collect_invariants(self) -> dict[str, Any]:
-            return _snapshot(self.steps)
+            return _snapshot(self.steps)["invariants"]
 
         def render_rgb(self) -> np.ndarray:
             return np.full((2, 2, 3), self.steps, dtype=np.uint8)

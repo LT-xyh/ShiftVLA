@@ -43,6 +43,7 @@ PAIR_PREFIX = "m1n0-pair-"
 ACTION_SHAPE = (82, 7)
 ACTION_DTYPE = np.dtype("float32")
 TASK = {"suite": "libero_spatial", "task_id": 0, "init_state_id": 0, "seed": 2027}
+TARGET_OBJECT_NAME = "akita_black_bowl_1"
 REGIME_NAMES: tuple[str, ...] = (
     "free_motion",
     "pre_contact",
@@ -55,6 +56,18 @@ REGIME_NAMES: tuple[str, ...] = (
 DEFAULT_QUANTITY_ROOTS = ("qpos", "qvel", "objects", "gripper_physical")
 DEFAULT_CAMERA = "agentview"
 DEFAULT_RENDER_KEY = "render_rgb"
+# These are the names emitted by the pinned LeRobot LIBERO adapter after its
+# official camera-name mapping.  The path is retained in evidence, while the
+# camera group is resolved from the leaf rather than guessed from a requested
+# output label.
+OFFICIAL_RGB_LEAF_CAMERAS = {
+    "image": "agentview",
+    "image2": "robot0_eye_in_hand",
+    "agentview_image": "agentview",
+    "robot0_eye_in_hand_image": "robot0_eye_in_hand",
+    "agentview_rgb": "agentview",
+    "robot0_eye_in_hand_rgb": "robot0_eye_in_hand",
+}
 EXPECTED_PAIR_IDS = tuple(f"{PAIR_PREFIX}{index:03d}" for index in range(PAIR_COUNT))
 STRICT_QUANTITY_ROOTS = (
     "integration",
@@ -458,6 +471,10 @@ def _validate_strict_null_config(config: Mapping[str, Any], runtime_config: Mapp
         raise ProvenanceError("strict null config requires renderer camera and observation_key")
     if not isinstance(renderer.get("camera"), str) or not renderer["camera"].strip():
         raise ProvenanceError("strict null config renderer.camera is required")
+    if renderer["camera"] != DEFAULT_CAMERA:
+        raise ProvenanceError(
+            f"strict null config renderer.camera is frozen to {DEFAULT_CAMERA!r}"
+        )
     if not isinstance(renderer.get("observation_key"), str) or not renderer["observation_key"].strip():
         raise ProvenanceError("strict null config renderer.observation_key is required")
     configured_runtime = config.get("runtime")
@@ -919,26 +936,80 @@ def _contact_records(snapshot: Any) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(result))
 
 
-def _object_identity_tokens(snapshot: Any) -> set[str]:
+def _name_contains_token(value: Any, token: str) -> bool:
+    text = str(value).lower()
+    target = str(token).lower()
+    if text == target:
+        return True
+    return re.search(rf"(?<![a-z0-9]){re.escape(target)}(?![a-z0-9])", text) is not None
+
+
+def _target_object_tokens(snapshot: Any, *, strict: bool = False) -> set[str]:
+    """Return names belonging only to the frozen target object."""
+
     objects = _invariants(snapshot).get("objects", {})
     if not isinstance(objects, Mapping):
         return set()
     tokens: set[str] = set()
     for name, value in objects.items():
-        tokens.add(str(name).lower())
+        object_tokens = {str(name).lower()}
         if isinstance(value, Mapping):
             for field_name in ("name", "root_body", "body_name", "geom_name", "geom_names", "geoms"):
                 candidate = value.get(field_name)
                 if isinstance(candidate, str):
-                    tokens.add(candidate.lower())
+                    object_tokens.add(candidate.lower())
                 elif isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes)):
-                    tokens.update(str(item).lower() for item in candidate)
+                    object_tokens.update(str(item).lower() for item in candidate)
+        is_target = any(_name_contains_token(candidate, TARGET_OBJECT_NAME) for candidate in object_tokens)
+        # Non-strict historical test fixtures used ``target`` as a shorthand;
+        # strict workers must expose the canonical frozen object identity.
+        if not is_target and not strict and str(name).lower() == "target":
+            is_target = True
+            object_tokens.update({"target_geom"})
+        if is_target:
+            tokens.update(object_tokens)
     return {token for token in tokens if token}
 
 
 def _terminal_semantics(attempt: Mapping[str, Any]) -> dict[str, Any]:
     terminal = attempt.get("terminal")
     return dict(terminal) if isinstance(terminal, Mapping) else {}
+
+
+def _predicate_goal_values(snapshot: Any) -> tuple[bool, ...] | None:
+    """Return the exact goal-predicate values exposed by one snapshot."""
+
+    predicates = _invariants(snapshot).get("predicates")
+    if not isinstance(predicates, Mapping) or predicates.get("available") is not True:
+        return None
+    goals = predicates.get("goals")
+    if not isinstance(goals, Sequence) or isinstance(goals, (str, bytes)) or not goals:
+        return None
+    values: list[bool] = []
+    for goal in goals:
+        if not isinstance(goal, Mapping) or not isinstance(goal.get("value"), (bool, np.bool_)):
+            return None
+        values.append(bool(goal["value"]))
+    return tuple(values)
+
+
+def _predicate_transition_evidence(previous: Any, current: Any) -> dict[str, Any]:
+    """Prove a predicate transition from adjacent official invariant frames."""
+
+    before = _predicate_goal_values(previous)
+    after = _predicate_goal_values(current)
+    transitioned = bool(
+        before is not None
+        and after is not None
+        and len(before) == len(after)
+        and any(not old and new for old, new in zip(before, after))
+    )
+    return {
+        "available": before is not None and after is not None,
+        "previous": list(before) if before is not None else None,
+        "current": list(after) if after is not None else None,
+        "predicate_transition": transitioned,
+    }
 
 
 def _window_map(attempt: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -1151,9 +1222,9 @@ def _selected_numeric_leaves(snapshot: Any, roots: Sequence[str]) -> dict[str, n
     return result
 
 
-def _actual_robot_object_contact(snapshot: Any) -> bool:
+def _actual_robot_object_contact(snapshot: Any, *, strict: bool = False) -> bool:
     contacts = _contact_records(snapshot)
-    object_tokens = _object_identity_tokens(snapshot)
+    object_tokens = _target_object_tokens(snapshot, strict=strict)
     if not object_tokens:
         return False
     for left, right in contacts:
@@ -1206,14 +1277,25 @@ def _object_positions(snapshot: Any) -> list[np.ndarray]:
     return result
 
 
-def _object_position_map(snapshot: Any) -> dict[str, np.ndarray]:
+def _object_position_map(snapshot: Any, *, target_only: bool = False, strict: bool = False) -> dict[str, np.ndarray]:
     objects = _invariants(snapshot).get("objects", {})
     if not isinstance(objects, Mapping):
         return {}
+    target_tokens = _target_object_tokens(snapshot, strict=strict) if target_only else set()
     result: dict[str, np.ndarray] = {}
     for name, value in objects.items():
         if not isinstance(value, Mapping):
             continue
+        if target_only:
+            object_tokens = {str(name).lower()}
+            for field_name in ("name", "root_body", "body_name", "geom_name", "geom_names", "geoms"):
+                candidate = value.get(field_name)
+                if isinstance(candidate, str):
+                    object_tokens.add(candidate.lower())
+                elif isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes)):
+                    object_tokens.update(str(item).lower() for item in candidate)
+            if not target_tokens or not any(token in target_tokens for token in object_tokens):
+                continue
         position = value.get("body_pos", value.get("position"))
         if position is None:
             continue
@@ -1226,8 +1308,9 @@ def _object_position_map(snapshot: Any) -> dict[str, np.ndarray]:
     return result
 
 
-def _object_motion(first: Any, current: Any) -> bool:
-    left, right = _object_position_map(first), _object_position_map(current)
+def _object_motion(first: Any, current: Any, *, strict: bool = False) -> bool:
+    left = _object_position_map(first, target_only=True, strict=strict)
+    right = _object_position_map(current, target_only=True, strict=strict)
     if set(left) != set(right):
         return False
     return any(a.shape == right[name].shape and not np.array_equal(a, right[name]) for name, a in left.items())
@@ -1240,21 +1323,63 @@ def _independent_evidence(
     *,
     action: Any = None,
     history: Sequence[Mapping[str, Any]] | None = None,
+    strict: bool = False,
 ) -> dict[str, dict[str, Any]]:
     frames = list(history or (first, current))
-    contacts = [_actual_robot_object_contact(frame) for frame in frames]
+    contacts = [_actual_robot_object_contact(frame, strict=strict) for frame in frames]
     closes = [_close_command(frame, frame.get("action") if isinstance(frame, Mapping) else action) for frame in frames]
-    contact = bool(_actual_robot_object_contact(current))
+    contact = bool(_actual_robot_object_contact(current, strict=strict))
     close = _close_command(current, action)
     sustained = any(all(contacts[index : index + 2]) and all(closes[index : index + 2]) for index in range(max(0, len(frames) - 1)))
     if len(frames) < 2:
         sustained = False
-    carried = any(_object_motion(first, frame) for frame in frames[1:])
+    carried = any(_object_motion(first, frame, strict=strict) for frame in frames[1:])
+    contact_observed = any(contacts)
     source = "attempt_snapshots_and_frozen_actions"
     return {
-        "contact": {"present": contact, "source": source, "topology": list(_contact_records(current))},
-        "grasp": {"present": bool(contact and close and sustained), "source": source, "sustained": sustained},
-        "carried": {"present": carried, "source": source},
+        "contact": {
+            "present": contact,
+            "observed": contact_observed,
+            "source": source,
+            "target_object": TARGET_OBJECT_NAME,
+            "topology": list(_contact_records(current)),
+        },
+        "grasp": {
+            "present": bool(contact and close and sustained),
+            "observed": bool(sustained),
+            "source": source,
+            "target_object": TARGET_OBJECT_NAME,
+            "sustained": sustained,
+        },
+        "carried": {
+            "present": carried,
+            "observed": carried,
+            "source": source,
+            "target_object": TARGET_OBJECT_NAME,
+        },
+    }
+
+
+def _window_regime_requirements(
+    regime: str, history: Sequence[Mapping[str, Any]], *, strict: bool = False
+) -> dict[str, bool]:
+    """Check regime evidence across its full designated continuation window."""
+
+    frames = list(history)
+    if not frames:
+        return {"contact": False, "grasp": False, "carried": False}
+    derived = _independent_evidence(
+        str(regime),
+        frames[0],
+        frames[-1],
+        action=frames[-1].get("action") if isinstance(frames[-1], Mapping) else None,
+        history=frames,
+        strict=strict,
+    )
+    return {
+        "contact": bool(derived.get("contact", {}).get("observed")),
+        "grasp": bool(derived.get("grasp", {}).get("observed")),
+        "carried": bool(derived.get("carried", {}).get("observed")),
     }
 
 
@@ -2017,6 +2142,7 @@ def _terminal_reason_evidence(
         return None, {
             "source": "missing",
             "field": None,
+            "raw_reason": None,
             "returned_step": True,
             "terminated": bool(terminated),
             "truncated": bool(truncated),
@@ -2025,9 +2151,66 @@ def _terminal_reason_evidence(
     return reason, {
         "source": source,
         "field": field_name,
+        "raw_reason": reason,
         "returned_step": True,
         "terminated": bool(terminated),
         "truncated": bool(truncated),
+    }
+
+
+def _derive_terminal_reason(
+    raw_reason: Any,
+    *,
+    step: int,
+    success: bool,
+    previous_snapshot: Any,
+    terminal_snapshot: Any,
+    expected_terminal: Mapping[str, Any],
+) -> tuple[str | None, dict[str, Any]]:
+    """Separate raw wrapper termination from the frozen semantic terminal.
+
+    The LeRobot/LIBERO step API does not expose a semantic reason.  In that
+    case the only permitted ``predicate_transition`` claim is the conjunction
+    of the frozen terminal step, successful completion, and an observed
+    false-to-true goal-predicate transition in adjacent invariant frames.
+    """
+
+    expected_step = expected_terminal.get("step")
+    expected_reason = expected_terminal.get("termination_reason")
+    predicate_evidence = _predicate_transition_evidence(previous_snapshot, terminal_snapshot)
+    frozen_step = (
+        not isinstance(expected_step, bool)
+        and isinstance(expected_step, (int, np.integer))
+        and int(step) == int(expected_step)
+    )
+    success_observed = success is True
+    derived = bool(
+        expected_reason == "predicate_transition"
+        and frozen_step
+        and success_observed
+        and predicate_evidence["predicate_transition"]
+    )
+    semantic_reason: str | None
+    if derived:
+        semantic_reason = "predicate_transition"
+    elif expected_reason == "predicate_transition" and str(raw_reason) == "predicate_transition":
+        # Do not accept a copied/configured semantic reason without its
+        # independent terminal evidence.  ``None`` makes the normal terminal
+        # validator fail closed and leaves the raw reason intact below.
+        semantic_reason = None
+    elif raw_reason is None:
+        semantic_reason = None
+    else:
+        semantic_reason = str(raw_reason)
+    return semantic_reason, {
+        "source": "frozen_terminal_step_success_predicate_transition",
+        "frozen_terminal_step": frozen_step,
+        "success": success_observed,
+        "predicate_transition": bool(predicate_evidence["predicate_transition"]),
+        "predicate_evidence": predicate_evidence,
+        "derived": derived,
+        "raw_reason": raw_reason,
+        "semantic_reason": semantic_reason,
     }
 
 
@@ -2230,6 +2413,7 @@ def execute_attempt(
     """Execute one tape exactly once from one freshly constructed adapter."""
 
     adapter: Any = None
+    result: dict[str, Any] | None = None
     actions: np.ndarray
     try:
         config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
@@ -2258,6 +2442,11 @@ def execute_attempt(
             _runtime_identity_audit(config)
         adapter = adapter_factory(config) if adapter_factory is not None else _construct_adapter(config)
         windows = _window_map_from_registry(attempt)
+        expected_terminal = attempt.get("terminal_contract")
+        if expected_terminal is None and isinstance(config.get("terminal_contract"), Mapping):
+            expected_terminal = config["terminal_contract"]
+        if not isinstance(expected_terminal, Mapping):
+            expected_terminal = DEFAULT_TERMINAL_CONTRACT
         timeline: dict[int, dict[str, Any]] = {}
         terminal: dict[str, Any] | None = None
         observed: dict[str, int] = {
@@ -2304,23 +2493,47 @@ def execute_attempt(
                     terminated=terminated,
                     truncated=truncated,
                 )
+                success = _terminal_success(adapter, info)
+                previous_snapshot = timeline.get(step - 1)
+                semantic_reason, semantic_evidence = _derive_terminal_reason(
+                    reason,
+                    step=step,
+                    success=success,
+                    previous_snapshot=previous_snapshot,
+                    terminal_snapshot=timeline[step],
+                    expected_terminal=expected_terminal,
+                )
+                official_evidence = {
+                    **official_evidence,
+                    "raw_reason": reason,
+                    "semantic_reason": semantic_reason,
+                    "semantic_derivation": semantic_evidence,
+                }
                 terminal = {
                     "step": step,
-                    "termination_reason": reason,
-                    "success": _terminal_success(adapter, info),
+                    "termination_reason": semantic_reason,
+                    "raw_termination_reason": reason,
+                    "raw_termination_evidence": copy.deepcopy(official_evidence),
+                    "success": success,
                     "terminated": bool(terminated),
                     "truncated": bool(truncated),
                     "official_evidence": official_evidence,
                     "terminal_observation": observation,
                 }
+                if str(reason) == "environment_termination":
+                    # Preserve the M0 wrapper-level evidence separately from
+                    # the semantic predicate-transition classification.
+                    terminal["environment_termination_evidence"] = {
+                        "reason": "environment_termination",
+                        "source": official_evidence.get("source"),
+                        "field": official_evidence.get("field"),
+                        "returned_step": official_evidence.get("returned_step") is True,
+                    }
                 break
         if terminal is None:
             raise ProtocolError("frozen trace did not terminate legally at step 82")
         if int(terminal["step"]) != ACTION_SHAPE[0]:
             raise ProtocolError(f"frozen trace terminated at unexpected step {terminal['step']}")
-        expected_terminal = attempt.get("terminal_contract")
-        if expected_terminal is None and isinstance(config.get("terminal_contract"), Mapping):
-            expected_terminal = config["terminal_contract"]
         _validate_terminal(
             terminal,
             expected_terminal if isinstance(expected_terminal, Mapping) else None,
@@ -2395,19 +2608,64 @@ def execute_attempt(
                 if not _exact_equal(expected_facts, actual_facts):
                     raise ProtocolError("worker runtime facts differ from frozen runtime contract")
         result["output_sha256"] = payload_sha256(result)
-        return result
     except Exception as exc:
-        return _attempt_failure(attempt, exc)
+        result = _attempt_failure(attempt, exc)
     finally:
+        close_evidence: dict[str, Any]
         if adapter is not None:
             close = getattr(adapter, "close", None)
             if callable(close):
                 try:
                     close()
-                except Exception:
-                    # A close failure is retained by the parent as an attempt
-                    # artifact when the worker result itself is inspected.
-                    pass
+                except Exception as exc:
+                    close_evidence = {
+                        "attempted": True,
+                        "success": False,
+                        "source": "adapter.close",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                else:
+                    close_evidence = {
+                        "attempted": True,
+                        "success": True,
+                        "source": "adapter.close",
+                    }
+            else:
+                close_evidence = {
+                    "attempted": False,
+                    "success": False,
+                    "source": "adapter.close",
+                    "error": "fresh adapter does not expose close()",
+                }
+        else:
+            close_evidence = {
+                "attempted": False,
+                "success": False,
+                "source": "adapter.close",
+                "error": "adapter was not constructed",
+            }
+        if result is None:
+            result = _attempt_failure(attempt, "worker produced no attempt result")
+        result["close_evidence"] = close_evidence
+        if not close_evidence["success"] and result.get("status") == "completed":
+            result["status"] = "failed"
+            result["error"] = f"close cleanup failed: {close_evidence.get('error', 'unknown error')}"
+        elif not close_evidence["success"] and close_evidence.get("error"):
+            result["error"] = (
+                f"{result.get('error', 'attempt failed')}; "
+                f"close cleanup failed: {close_evidence['error']}"
+            )
+        # Cleanup evidence is part of the immutable worker payload.  Recompute
+        # the payload hash after the close outcome is known; a close exception
+        # therefore cannot leave a falsely completed/hash-valid attempt.
+        result.pop("output_sha256", None)
+        try:
+            result["output_sha256"] = payload_sha256(result)
+        except Exception as exc:
+            result["status"] = "failed"
+            result["error"] = f"attempt payload hashing failed: {type(exc).__name__}: {exc}"
+            result.pop("output_sha256", None)
+    return result
 
 
 def _window_map_from_registry(attempt: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -3044,17 +3302,44 @@ def _snapshot_action(snapshot: Mapping[str, Any]) -> np.ndarray | None:
     return np.ascontiguousarray(array).copy()
 
 
+def _renderer_camera_for_key(key: str) -> str | None:
+    """Resolve an official RGB observation key to its actual camera/view."""
+
+    normalized = str(key)
+    if normalized == DEFAULT_RENDER_KEY:
+        return DEFAULT_CAMERA
+    leaf = normalized.rsplit(".", 1)[-1]
+    if "[" in leaf:
+        leaf = leaf.split("[", 1)[0]
+    return OFFICIAL_RGB_LEAF_CAMERAS.get(leaf)
+
+
 def _renderer_images(
-    snapshot: Mapping[str, Any], *, camera: str = DEFAULT_CAMERA, configured_key: str = DEFAULT_RENDER_KEY
+    snapshot: Mapping[str, Any],
+    *,
+    camera: str = DEFAULT_CAMERA,
+    configured_key: str = DEFAULT_RENDER_KEY,
+    strict: bool = False,
 ) -> dict[str, np.ndarray]:
+    """Collect direct and official-tree RGB images with fail-closed view IDs."""
+
     result: dict[str, np.ndarray] = {}
+    configured_camera = str(camera)
+    if strict and configured_camera != DEFAULT_CAMERA:
+        # ``render_rgb`` is an unlabelled direct render.  It is only permitted
+        # as the official agentview diagnostic and may not be relabelled as a
+        # side/wrist view by configuration.
+        raise NullCalibrationError(
+            f"direct renderer is frozen to {DEFAULT_CAMERA}, got {configured_camera!r}"
+        )
     direct = snapshot.get("renderer")
     if direct is not None:
         value = np.asarray(direct)
         if value.dtype != np.dtype("uint8") or value.ndim < 2 or value.size == 0:
-            raise NullCalibrationError("direct renderer output is not a non-empty uint8 image")
+            raise NullCalibrationError("direct renderer output must be a non-empty uint8 image")
         result[str(configured_key)] = np.ascontiguousarray(value)
     raw = snapshot.get("raw_observation")
+
     def visit(value: Any, path: str) -> None:
         if isinstance(value, Mapping):
             for key, child in value.items():
@@ -3069,6 +3354,18 @@ def _renderer_images(
         except Exception:
             return
         if array.dtype == np.dtype("uint8") and array.ndim >= 2 and array.size:
+            resolved_camera = _renderer_camera_for_key(path)
+            if resolved_camera is None:
+                if strict:
+                    raise NullCalibrationError(
+                        f"unknown official RGB observation key/camera mapping: {path}"
+                    )
+                # Legacy synthetic fixtures used a single generic ``pixels``
+                # leaf.  Keep that non-authoritative compatibility path while
+                # strict workers require a named official camera key.
+                resolved_camera = DEFAULT_CAMERA if path == "pixels" else None
+            if resolved_camera is None:
+                return
             result[path] = np.ascontiguousarray(array)
     visit(raw, "")
     return result
@@ -3204,10 +3501,16 @@ def build_envelopes(
                 if not configured_camera.strip() or not configured_key.strip():
                     raise NullCalibrationError("renderer camera and observation_key must be non-empty")
                 left_images = _renderer_images(
-                    lsnap[horizon], camera=configured_camera, configured_key=configured_key
+                    lsnap[horizon],
+                    camera=configured_camera,
+                    configured_key=configured_key,
+                    strict=strict_contract,
                 )
                 right_images = _renderer_images(
-                    rsnap[horizon], camera=configured_camera, configured_key=configured_key
+                    rsnap[horizon],
+                    camera=configured_camera,
+                    configured_key=configured_key,
+                    strict=strict_contract,
                 )
                 if set(left_images) != set(right_images):
                     raise NullCalibrationError(f"renderer observation key set differs at {pair_id}/{window_id}/{horizon}")
@@ -3219,12 +3522,13 @@ def build_envelopes(
                     strict=strict_contract,
                 )
                 for key in sorted(left_images):
+                    image_camera = _renderer_camera_for_key(key) or configured_camera
                     for regime in normalized_regimes:
                         renderer_samples.append(
                             {
                                 "pair_id": pair_id,
                                 "trace_id": pair.trace_id,
-                                "camera": configured_camera,
+                                "camera": image_camera,
                                 "key": key,
                                 "regime": str(regime),
                                 "horizon": horizon,
