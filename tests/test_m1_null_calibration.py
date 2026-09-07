@@ -443,6 +443,67 @@ def test_pair_validation_rejects_post_construction_reset_provenance_even_if_flat
     assert any("post-construction" in reason or "reset provenance" in reason for reason in invalid.reasons)
 
 
+def test_strict_reset_provenance_requires_source_bound_lazy_records_and_complete_inner_monitoring() -> None:
+    calibration = _module()
+    source = {
+        "path": "external/lerobot/src/lerobot/envs/libero.py",
+        "sha256": "97c984f12331527626812ec19967ef399e545535b3571becf044db2417ae9d71",
+        "lines": "external/lerobot/src/lerobot/envs/libero.py:258-270,339-346",
+    }
+    records = {
+        "outer_reset": {"observed": True, "count": 1, "source": source},
+        "inner_reset": {"observed": True, "count": 2, "source": source},
+        "set_init_state": {"observed": True, "count": 1, "source": source},
+        "settle": {"observed": True, "count": 10, "source": source},
+        "dummy_action": {"observed": True, "count": 10, "source": source},
+        "post_reset_state": {
+            "inner_env_exists": True,
+            "num_steps_wait": 10,
+            "post_reset_timestep": 10,
+            "matches_num_steps_wait": True,
+        },
+        "source_evidence": {"lerobot_libero": source},
+    }
+    provenance = {
+        "construction": {
+            "operations": {
+                name: {"allowed": True, "observed": True, "count": count}
+                for name, count in (("reset", 1), ("set_init_state", 1), ("settle", 10))
+            },
+            "authoritative_records": records,
+            "post_construction_monitoring": {
+                "complete": True,
+                "observed": True,
+                "required_operations": ["reset", "set_init_state", "step"],
+                "targets": ["OffScreenRenderEnv"],
+                "installed": [
+                    {"owner": "OffScreenRenderEnv", "operation": "reset"},
+                    {"owner": "OffScreenRenderEnv", "operation": "set_init_state"},
+                    {"owner": "OffScreenRenderEnv", "operation": "step"},
+                ],
+            },
+            "post_construction_forbidden": {
+                name: {"allowed": False, "observed": True, "count": 0}
+                for name in calibration.POST_CONSTRUCTION_FORBIDDEN_OPERATIONS
+            },
+        }
+    }
+    assert calibration._reset_provenance_errors(provenance, strict=True) == []
+
+    missing_record = deepcopy(provenance)
+    missing_record["construction"]["authoritative_records"]["inner_reset"] = {
+        "observed": False,
+        "count": None,
+    }
+    errors = calibration._reset_provenance_errors(missing_record, strict=True)
+    assert any("authoritative" in error or "construction record" in error for error in errors)
+
+    incomplete_monitor = deepcopy(provenance)
+    incomplete_monitor["construction"]["post_construction_monitoring"]["complete"] = False
+    errors = calibration._reset_provenance_errors(incomplete_monitor, strict=True)
+    assert any("monitor" in error for error in errors)
+
+
 def test_protocol_counter_publication_includes_every_forbidden_operation() -> None:
     calibration = _module()
 

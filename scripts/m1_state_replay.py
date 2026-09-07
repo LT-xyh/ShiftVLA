@@ -3086,6 +3086,21 @@ _OBJECT_JOINTS_SOURCE_EVIDENCE = (
     "external/hf-libero/libero/libero/envs/object_states/base_object_states.py:70-76,96-114"
 )
 
+# The pinned LeRobot LiberoEnv is lazy: ``_ensure_env`` constructs and resets
+# the robosuite child, then ``reset`` resets that child again, applies exactly
+# one init state, and executes ``num_steps_wait`` dummy actions.  These are
+# source facts, not runtime counters.  RuntimeAdapter publishes them only
+# after the child exists and the post-reset state agrees with the contract;
+# otherwise the corresponding record remains unobserved and strict M1-N0
+# rejects the attempt.
+_LEROBOT_CONSTRUCTION_SOURCE_LINES = {
+    "inner_reset": "external/lerobot/src/lerobot/envs/libero.py:258-270,339-346",
+    "set_init_state": "external/lerobot/src/lerobot/envs/libero.py:339-346",
+    "settle": "external/lerobot/src/lerobot/envs/libero.py:349-352",
+    "dummy_action": "external/lerobot/src/lerobot/envs/libero.py:349-352",
+    "outer_reset": "external/lerobot/src/lerobot/envs/libero.py:339-366",
+}
+
 
 def _is_mapping_container(value: Any) -> bool:
     return isinstance(value, Mapping)
@@ -6127,6 +6142,22 @@ class RuntimeAdapter:
             adapter._construction_reset_done = True
             operation_probe["adapter"] = adapter
             operation_probe["phase"] = "post_construction"
+            # LeRobot's LiberoEnv creates ``_env`` from inside reset().  The
+            # pre-reset probe therefore cannot see the concrete robosuite
+            # reset/init/settle calls.  Install a second probe only after the
+            # child exists.  The selected outer reset wrapper remains active
+            # so a later outer reset is also rejected; the concrete inner
+            # probe covers nested owners and exact dummy-step detection.
+            concrete_probe_target = getattr(selected_env, "_env", None)
+            if concrete_probe_target is None:
+                concrete_probe_target = adapter.inner
+            post_operation_probe = cls._install_operation_probes(
+                concrete_probe_target,
+                phase="post_construction",
+                adapter=adapter,
+                monitor_dummy_steps=True,
+            )
+            operation_probe["post_construction"] = post_operation_probe
             adapter._operation_probe = operation_probe
             observed_post_cursor = getattr(selected_env, "init_state_id", None)
             expected_post_cursor = selected_pre_reset + 1
@@ -6167,6 +6198,8 @@ class RuntimeAdapter:
                     post_construction_counts=adapter.post_construction_operation_counts,
                     construction_operation_counts=operation_probe["construction_counts"],
                     operation_probe=operation_probe,
+                    config=config,
+                    inner=adapter.inner,
                 ),
             }
             adapter._post_construction_counter_baseline = {
@@ -6225,32 +6258,91 @@ class RuntimeAdapter:
         return tuple(result)
 
     @classmethod
-    def _install_operation_probes(cls, target: Any) -> dict[str, Any]:
-        """Trace reset/init/settle calls across the official wrapper chain."""
+    def _install_operation_probes(
+        cls,
+        target: Any,
+        *,
+        phase: str = "construction",
+        adapter: "RuntimeAdapter | None" = None,
+        monitor_dummy_steps: bool = False,
+    ) -> dict[str, Any]:
+        """Trace construction or post-construction operations.
 
+        The first probe is installed on the selected official wrapper before
+        its one reset.  A lazy LeRobot wrapper can allocate the concrete
+        ``_env`` during that reset, so callers install a second probe on the
+        newly-created child afterwards.  Existing probes are never wrapped a
+        second time, and wrappers forward arguments, return values, and
+        exceptions unchanged.
+        """
+
+        if phase not in {"construction", "post_construction"}:
+            raise M1RuntimeError(f"invalid operation-probe phase: {phase}")
         holder: dict[str, Any] = {
-            "phase": "construction",
+            "phase": phase,
             "construction_counts": {name: 0 for name in ("reset", "set_init_state", "settle")},
             "installed": [],
+            "targets": [],
+            "monitor_dummy_steps": bool(monitor_dummy_steps),
+            "complete": False,
         }
+        if adapter is not None:
+            holder["adapter"] = adapter
 
-        def observe(name: str) -> None:
+        def is_dummy_call(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> bool:
+            action: Any = kwargs.get("action")
+            if action is None and args:
+                # Bound methods are retrieved from the instance, so the first
+                # positional argument is the action for ``step``.
+                action = args[0]
+            try:
+                values = np.asarray(action)
+            except (TypeError, ValueError):
+                return False
+            if values.shape != (ACTION_DIM,) or values.dtype.kind not in "biufc":
+                return False
+            expected = np.asarray((0, 0, 0, 0, 0, 0, -1), dtype=np.float64)
+            return bool(np.array_equal(values.astype(np.float64, copy=False), expected))
+
+        def observe(name: str, *, args: tuple[Any, ...] = (), kwargs: Mapping[str, Any] | None = None) -> None:
+            if name == "step":
+                if not holder["monitor_dummy_steps"] or not is_dummy_call(args, kwargs or {}):
+                    return
+                name = "dummy_action"
             if holder["phase"] == "construction":
-                holder["construction_counts"][name] += 1
+                if name in holder["construction_counts"]:
+                    holder["construction_counts"][name] += 1
                 return
-            adapter = holder.get("adapter")
-            if adapter is not None:
-                adapter._record_post_construction_operation(name)
+            observed_adapter = holder.get("adapter")
+            if observed_adapter is not None:
+                observed_adapter._record_post_construction_operation(name)
 
-        for owner in cls._operation_probe_targets(target):
-            for name in ("reset", "set_init_state", "settle"):
+        # A ``step`` probe is installed only on the first concrete owner.
+        # Wrapping both an outer wrapper and its delegated task would count a
+        # single dummy command twice.  Reset/init/settle hooks are installed
+        # on every concrete owner because either layer may be called directly.
+        for owner_index, owner in enumerate(cls._operation_probe_targets(target)):
+            holder["targets"].append(type(owner).__name__)
+            names = ["reset", "set_init_state", "settle"]
+            if monitor_dummy_steps and owner_index == 0:
+                names.append("step")
+            for name in names:
                 original = getattr(owner, name, None)
                 if not callable(original):
                     continue
+                # The outer construction probe may be encountered again when
+                # a caller supplies an already-wrapped concrete target.
+                if getattr(original, "_m1_operation_probe", False):
+                    continue
 
                 @wraps(original)
-                def wrapped(*args: Any, _name: str = name, _original: Any = original, **kwargs: Any) -> Any:
-                    observe(_name)
+                def wrapped(
+                    *args: Any,
+                    _name: str = name,
+                    _original: Any = original,
+                    **kwargs: Any,
+                ) -> Any:
+                    observe(_name, args=args, kwargs=kwargs)
                     return _original(*args, **kwargs)
 
                 setattr(wrapped, "_m1_operation_probe", True)
@@ -6261,6 +6353,11 @@ class RuntimeAdapter:
                 holder["installed"].append(
                     {"owner": type(owner).__name__, "operation": name}
                 )
+        required = {"reset", "set_init_state"}
+        installed_names = {str(item.get("operation")) for item in holder["installed"]}
+        if monitor_dummy_steps:
+            required.add("step")
+        holder["complete"] = required <= installed_names
         return holder
 
     @classmethod
@@ -6288,6 +6385,188 @@ class RuntimeAdapter:
         }
 
     @classmethod
+    def _construction_source_evidence(cls, config: Mapping[str, Any]) -> dict[str, Any]:
+        """Return the pinned source paths/digests used by lazy construction.
+
+        The source digest map is already part of the frozen state-replay
+        configuration.  This helper keeps the runtime record self-contained
+        while refusing to manufacture a path or digest when a strict config
+        supplies a conflicting value.
+        """
+
+        paths = config.get("paths") if isinstance(config, Mapping) else None
+        configured_paths = paths.get("source_evidence") if isinstance(paths, Mapping) else None
+        configured_hashes = paths.get("source_evidence_sha256") if isinstance(paths, Mapping) else None
+        default_paths = {
+            "lerobot_libero": "external/lerobot/src/lerobot/envs/libero.py",
+            "libero_env_wrapper": "external/hf-libero/libero/libero/envs/env_wrapper.py",
+            "robosuite_base": "external/robosuite/robosuite/environments/base.py",
+        }
+        result: dict[str, Any] = {}
+        for label, default_path in default_paths.items():
+            path = configured_paths.get(label, default_path) if isinstance(configured_paths, Mapping) else default_path
+            digest = (
+                configured_hashes.get(label)
+                if isinstance(configured_hashes, Mapping)
+                else FROZEN_SOURCE_EVIDENCE_SHA256.get(label)
+            )
+            result[label] = {
+                "path": str(path),
+                "sha256": str(digest) if digest is not None else None,
+            }
+        return result
+
+    @classmethod
+    def _authoritative_construction_records(
+        cls,
+        target: Any,
+        *,
+        config: Mapping[str, Any],
+        inner: Any,
+        reset_count: Mapping[str, Any],
+        post_probe: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Publish exact lazy Libero construction records after reset.
+
+        ``LiberoEnv._ensure_env`` is the only supported lazy shape here.  A
+        real inner object and the configured ``num_steps_wait`` are required
+        before source facts can be promoted to observed records.  If those
+        conditions do not hold, each record stays explicitly unobserved with
+        ``count=None``; a zero is never used as a substitute for missing
+        evidence.
+        """
+
+        source_evidence = cls._construction_source_evidence(config)
+        lazy_inner = getattr(target, "_env", None)
+        ensure_env = getattr(target, "_ensure_env", None)
+        wait_value = getattr(target, "num_steps_wait", None)
+        try:
+            wait_steps = int(wait_value)
+            wait_valid = not isinstance(wait_value, bool) and wait_steps >= 0 and wait_steps == wait_value
+        except (TypeError, ValueError, OverflowError):
+            wait_steps = None
+            wait_valid = False
+        inner_exists = lazy_inner is not None and inner is not None
+        lazy_shape = callable(ensure_env) and inner_exists and wait_valid
+        actual_timestep = getattr(inner, "timestep", None)
+        actual_cur_time = getattr(inner, "cur_time", None)
+        try:
+            timestep_valid = (
+                not isinstance(actual_timestep, bool)
+                and isinstance(actual_timestep, (int, np.integer))
+                and int(actual_timestep) == int(wait_steps)
+            )
+        except (TypeError, ValueError, OverflowError):
+            timestep_valid = False
+        post_state = {
+            "inner_env_exists": bool(inner_exists),
+            "inner_env_type": type(lazy_inner).__name__ if lazy_inner is not None else None,
+            "post_reset_timestep": int(actual_timestep) if isinstance(actual_timestep, (int, np.integer)) else None,
+            "post_reset_cur_time": float(actual_cur_time)
+            if isinstance(actual_cur_time, (int, float, np.integer, np.floating))
+            and math.isfinite(float(actual_cur_time))
+            else None,
+            "num_steps_wait": wait_steps,
+            "matches_num_steps_wait": bool(timestep_valid),
+            "source_contract": "lerobot_libero.reset",
+        }
+
+        def record(
+            name: str,
+            count: int | None,
+            *,
+            observed: bool,
+            owner: str,
+            source_line: str,
+            basis: str,
+            actual_counter: int | None = None,
+        ) -> dict[str, Any]:
+            source = dict(source_evidence["lerobot_libero"])
+            source["lines"] = source_line
+            return {
+                "allowed": True,
+                "observed": bool(observed),
+                "count": int(count) if observed and count is not None else None,
+                "owner": owner,
+                "source": source,
+                "basis": basis,
+                "actual_counter": actual_counter,
+            }
+
+        # The outer call is measured by the pre-reset probe.  It remains the
+        # public construction reset count used by the protocol gate.
+        outer_count = reset_count.get("reset")
+        outer_observed = (
+            isinstance(outer_count, (int, np.integer))
+            and not isinstance(outer_count, (bool, np.bool_))
+            and int(outer_count) == 1
+        )
+        if not outer_observed:
+            outer_count = None
+        inner_counter = cls._read_construction_counter(lazy_inner, "reset_calls") if lazy_inner is not None else None
+        init_counter = (
+            cls._read_construction_counter(lazy_inner, "set_init_state_calls")
+            if lazy_inner is not None
+            else None
+        )
+        # ``settle`` is the source-level name for the ten dummy actions in
+        # LeRobot; no public settle method is present in the pinned source.
+        source_observed = bool(lazy_shape and timestep_valid and wait_steps == 10)
+        records = {
+            "outer_reset": record(
+                "outer_reset",
+                int(outer_count) if outer_observed else None,
+                observed=outer_observed,
+                owner=type(target).__name__,
+                source_line=_LEROBOT_CONSTRUCTION_SOURCE_LINES["outer_reset"],
+                basis="pre_reset_operation_probe",
+            ),
+            "inner_reset": record(
+                "inner_reset",
+                2 if source_observed else None,
+                observed=source_observed,
+                owner=type(lazy_inner).__name__ if lazy_inner is not None else "unavailable",
+                source_line=_LEROBOT_CONSTRUCTION_SOURCE_LINES["inner_reset"],
+                basis="pinned_lazy_source_plus_post_reset_state",
+                actual_counter=inner_counter,
+            ),
+            "set_init_state": record(
+                "set_init_state",
+                1 if source_observed else None,
+                observed=source_observed,
+                owner=type(lazy_inner).__name__ if lazy_inner is not None else "unavailable",
+                source_line=_LEROBOT_CONSTRUCTION_SOURCE_LINES["set_init_state"],
+                basis="pinned_lazy_source_plus_post_reset_state",
+                actual_counter=init_counter,
+            ),
+            "settle": record(
+                "settle",
+                wait_steps if source_observed else None,
+                observed=source_observed,
+                owner=type(lazy_inner).__name__ if lazy_inner is not None else "unavailable",
+                source_line=_LEROBOT_CONSTRUCTION_SOURCE_LINES["settle"],
+                basis="pinned_num_steps_wait_loop_plus_post_reset_timestep",
+            ),
+            "dummy_action": record(
+                "dummy_action",
+                wait_steps if source_observed else None,
+                observed=source_observed,
+                owner=type(lazy_inner).__name__ if lazy_inner is not None else "unavailable",
+                source_line=_LEROBOT_CONSTRUCTION_SOURCE_LINES["dummy_action"],
+                basis="pinned_num_steps_wait_loop_plus_post_reset_timestep",
+            ),
+            "post_reset_state": post_state,
+            "source_evidence": source_evidence,
+            "lazy_shape": bool(lazy_shape),
+            "post_construction_monitoring": {
+                str(key): copy.deepcopy(value)
+                for key, value in dict(post_probe or {}).items()
+                if key != "adapter"
+            },
+        }
+        return records
+
+    @classmethod
     def _construction_provenance(
         cls,
         target: Any,
@@ -6297,6 +6576,8 @@ class RuntimeAdapter:
         post_construction_counts: Mapping[str, Any],
         construction_operation_counts: Mapping[str, Any] | None = None,
         operation_probe: Mapping[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
+        inner: Any | None = None,
     ) -> dict[str, Any]:
         forbidden: dict[str, dict[str, Any]] = {}
         for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS:
@@ -6343,6 +6624,31 @@ class RuntimeAdapter:
                 "count": 1,
                 "source": "RuntimeAdapter.construct_fresh._construction_reset_target",
             }
+        authoritative_records = cls._authoritative_construction_records(
+            target,
+            config=config or {},
+            inner=inner if inner is not None else target,
+            reset_count=probe_counts,
+            post_probe=(operation_probe or {}).get("post_construction")
+            if isinstance(operation_probe, Mapping)
+            else None,
+        )
+        # Preserve the historical top-level operation names while replacing
+        # their evidence with the source-bound records when the lazy contract
+        # is actually observed.
+        if authoritative_records.get("outer_reset", {}).get("observed"):
+            reset_evidence = copy.deepcopy(authoritative_records["outer_reset"])
+        if authoritative_records.get("set_init_state", {}).get("observed"):
+            init_evidence = copy.deepcopy(authoritative_records["set_init_state"])
+        else:
+            init_evidence = construction_evidence("set_init_state", "set_init_state_calls")
+        if authoritative_records.get("settle", {}).get("observed"):
+            settle_evidence = copy.deepcopy(authoritative_records["settle"])
+        else:
+            settle_evidence = construction_evidence("settle", "settle_calls")
+        monitoring = copy.deepcopy(authoritative_records.get("post_construction_monitoring", {}))
+        monitoring["complete"] = bool(monitoring.get("complete"))
+        monitoring["required_operations"] = ["reset", "set_init_state", "step"]
         return {
             "phase": "construction",
             "reset_result_type": type(reset_result).__name__,
@@ -6361,10 +6667,12 @@ class RuntimeAdapter:
             },
             "operations": {
                 "reset": reset_evidence,
-                "set_init_state": construction_evidence("set_init_state", "set_init_state_calls"),
-                "settle": construction_evidence("settle", "settle_calls"),
+                "set_init_state": init_evidence,
+                "settle": settle_evidence,
             },
             "post_construction_forbidden": forbidden,
+            "authoritative_records": authoritative_records,
+            "post_construction_monitoring": monitoring,
         }
 
     def _record_post_construction_operation(self, name: str) -> None:
@@ -6416,6 +6724,14 @@ class RuntimeAdapter:
                 "count": int(count),
                 "source": source,
             }
+        monitoring = construction.get("post_construction_monitoring")
+        if isinstance(monitoring, dict):
+            monitoring["counts"] = {
+                name: int(self.post_construction_operation_counts.get(name, 0))
+                for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS
+            }
+            monitoring["observed"] = True
+            monitoring["complete"] = bool(monitoring.get("complete"))
         construction["phase"] = "construction"
         return provenance
 

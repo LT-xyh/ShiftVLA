@@ -75,6 +75,13 @@ retaining duplicate rows.  Contact-distance quantities are canonicalized in
 the same order and are never compared when the A/B contact identity
 multisets differ.
 
+For the lazy official LeRobot wrapper, construction provenance also contains
+the pinned source path/SHA, exact inner-reset/init/settle/dummy counts, the
+post-reset inner-environment state, and complete post-construction probe
+installation evidence. Strict validation rejects missing or merely
+nonnegative counter values; an unobserved construction call is not published
+as zero.
+
 Floating physics variability is grouped by regime × quantity × horizon using
 the existing hard-gate envelope builder.  This includes every non-RGB numeric
 leaf in the official observation tree; the observation keys, dtypes, and

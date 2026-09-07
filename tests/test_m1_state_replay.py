@@ -1441,6 +1441,93 @@ def test_reset_provenance_counts_nested_construction_init_and_settle_calls() -> 
     assert adapter.reset_provenance_snapshot()["construction"]["post_construction_forbidden"]["settle"]["count"] == 0
 
 
+def test_lazy_official_shape_publishes_source_bound_construction_and_monitors_inner_after_reset() -> None:
+    """A LiberoEnv-shaped lazy wrapper must not hide its inner construction calls."""
+
+    replay = _module()
+    events: list[str] = []
+
+    class LazyInner(_FakeEnv):
+        def set_init_state(self, value: Any) -> None:
+            self.set_init_state_calls += 1
+            _fake_record(self, "construction_set_init_state")
+
+    class LazyOfficialEnv:
+        def __init__(self) -> None:
+            self._env: LazyInner | None = None
+            self._reset_done = False
+            self.init_state_id = 0
+            self._reset_stride = 1
+            self.num_steps_wait = 10
+            self.init_states = ["frozen-init"]
+            self.task = "task-zero"
+            self.task_description = "instruction-zero"
+            self.task_suite_name = "libero_spatial"
+
+        def _ensure_env(self) -> None:
+            if self._env is None:
+                self._env = LazyInner(events)
+                # This is the lazy inner reset performed by pinned
+                # LiberoEnv._ensure_env before the official reset path.
+                self._env.reset(seed=None)
+
+        def reset(self, seed: int | None = None) -> tuple[dict[str, int], dict[str, Any]]:
+            self._ensure_env()
+            assert self._env is not None
+            self._env.reset(seed=seed)
+            self._env.set_init_state(self.init_states[self.init_state_id])
+            self.init_state_id += self._reset_stride
+            for _ in range(self.num_steps_wait):
+                self._env.step(np.asarray([0, 0, 0, 0, 0, 0, -1], dtype=np.float32))
+            self._reset_done = True
+            return {"step": 0}, {}
+
+        def step(self, action: np.ndarray) -> Any:
+            assert self._env is not None
+            return self._env.step(action)
+
+        def check_success(self) -> bool:
+            assert self._env is not None
+            return self._env.check_success()
+
+        def close(self) -> None:
+            return None
+
+    lazy = LazyOfficialEnv()
+
+    def builder(config: Mapping[str, Any]) -> dict[str, Any]:
+        assert lazy._env is None
+        # The vector construction itself must not force lazy _env creation.
+        return {"env": _FakeVector(lazy), "mujoco": _FakeMujoco(_FakeData(), events)}
+
+    adapter = replay.RuntimeAdapter.construct_fresh(
+        _fake_config(Path("/tmp")),
+        runtime_builder=builder,
+        tape_hash="tape",
+    )
+    assert lazy._env is not None
+    construction = adapter.reset_provenance["construction"]
+    records = construction["authoritative_records"]
+    assert records["outer_reset"]["count"] == 1
+    assert records["inner_reset"]["count"] == 2
+    assert records["set_init_state"]["count"] == 1
+    assert records["settle"]["count"] == 10
+    assert records["dummy_action"]["count"] == 10
+    assert records["post_reset_state"]["inner_env_exists"] is True
+    assert records["source_evidence"]["lerobot_libero"]["sha256"] == replay.FROZEN_SOURCE_EVIDENCE_SHA256[
+        "lerobot_libero"
+    ]
+    # A later nested call is observed by the concrete inner probe rather than
+    # being mistaken for the construction-time zero baseline.
+    lazy._env.reset(seed=2027)
+    lazy._env.set_init_state(None)
+    lazy._env.step(np.asarray([0, 0, 0, 0, 0, 0, -1], dtype=np.float32))
+    forbidden = adapter.reset_provenance_snapshot()["construction"]["post_construction_forbidden"]
+    assert forbidden["reset"]["count"] == 1
+    assert forbidden["set_init_state"]["count"] == 1
+    assert forbidden["dummy_action"]["count"] == 1
+
+
 def test_terminal_manifest_survives_source_close_failure(tmp_path: Path) -> None:
     replay = _module()
     events: list[str] = []

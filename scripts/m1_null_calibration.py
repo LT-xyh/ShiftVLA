@@ -1201,6 +1201,83 @@ def _reset_provenance_errors(value: Any, *, strict: bool) -> list[str]:
                 errors.append(f"reset provenance forbidden count is invalid: {name}")
             elif int(count) != 0:
                 errors.append(f"post-construction forbidden operation observed: {name}={count}")
+    if strict:
+        # A lazy LeRobot child is not observable by a probe installed before
+        # LiberoEnv.reset().  The authoritative worker must therefore publish
+        # source-bound records plus the actual post-reset state, and a
+        # complete concrete-inner probe.  A nonnegative zero is insufficient
+        # evidence for any of these fields.
+        records = construction.get("authoritative_records") if isinstance(construction, Mapping) else None
+        if not isinstance(records, Mapping):
+            errors.append("reset provenance authoritative construction records are missing")
+        else:
+            expected_counts = {
+                "outer_reset": 1,
+                "inner_reset": 2,
+                "set_init_state": 1,
+                "settle": 10,
+                "dummy_action": 10,
+            }
+            for name, expected in expected_counts.items():
+                record = records.get(name)
+                if not isinstance(record, Mapping):
+                    errors.append(f"authoritative construction record is missing: {name}")
+                    continue
+                if record.get("observed") is not True or record.get("count") != expected:
+                    errors.append(
+                        f"authoritative construction record is not exact: {name}"
+                    )
+                if name != "outer_reset" and not isinstance(record.get("source"), Mapping):
+                    errors.append(f"authoritative construction record source is missing: {name}")
+            source_evidence = records.get("source_evidence")
+            expected_source = {
+                "path": "external/lerobot/src/lerobot/envs/libero.py",
+                "sha256": "97c984f12331527626812ec19967ef399e545535b3571becf044db2417ae9d71",
+            }
+            lerobot_source = source_evidence.get("lerobot_libero") if isinstance(source_evidence, Mapping) else None
+            if not isinstance(lerobot_source, Mapping):
+                errors.append("authoritative construction source evidence is missing: lerobot_libero")
+            else:
+                for field_name, expected in expected_source.items():
+                    if lerobot_source.get(field_name) != expected:
+                        errors.append(
+                            f"authoritative construction source evidence differs: lerobot_libero.{field_name}"
+                        )
+            post_state = records.get("post_reset_state")
+            if not isinstance(post_state, Mapping):
+                errors.append("authoritative construction post-reset state is missing")
+            else:
+                expected_post_state = {
+                    "inner_env_exists": True,
+                    "num_steps_wait": 10,
+                    "post_reset_timestep": 10,
+                    "matches_num_steps_wait": True,
+                }
+                for field_name, expected in expected_post_state.items():
+                    if post_state.get(field_name) != expected:
+                        errors.append(
+                            f"authoritative construction post-reset state differs: {field_name}"
+                        )
+        monitoring = construction.get("post_construction_monitoring") if isinstance(construction, Mapping) else None
+        if not isinstance(monitoring, Mapping):
+            errors.append("post-construction monitoring evidence is missing")
+        else:
+            if monitoring.get("complete") is not True or monitoring.get("observed") is not True:
+                errors.append("post-construction monitoring evidence is incomplete")
+            required_operations = monitoring.get("required_operations")
+            if sorted(str(item) for item in (required_operations or ())) != ["reset", "set_init_state", "step"]:
+                errors.append("post-construction monitoring required operations are incomplete")
+            targets = monitoring.get("targets")
+            installed = monitoring.get("installed")
+            installed_operations = {
+                str(item.get("operation"))
+                for item in (installed or ())
+                if isinstance(item, Mapping)
+            }
+            if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes)) or not targets:
+                errors.append("post-construction monitoring targets are missing")
+            if not {"reset", "set_init_state", "step"} <= installed_operations:
+                errors.append("post-construction monitoring hooks are incomplete")
     return errors
 
 
