@@ -588,6 +588,76 @@ def test_window_evidence_checks_continuation_for_h1_onset() -> None:
     assert requirements["contact"] is True
 
 
+def test_pair_validation_allows_contact_on_h1_while_retaining_window_diagnostics() -> None:
+    calibration = _module()
+    pair_id = "m1n0-pair-000"
+    left = _attempt_result(calibration, pair_id, "A", 11)
+    right = _attempt_result(calibration, pair_id, "B", 12)
+    for attempt in (left, right):
+        window = attempt["windows"]["contact"]
+        window["snapshots"]["0"] = _snapshot(43, contact=False)
+        window["snapshots"]["1"] = _snapshot(44, contact=True)
+        window["evidence"] = calibration._independent_evidence(
+            "contact",
+            window["snapshots"]["0"],
+            window["snapshots"]["1"],
+            action=np.ones(7, dtype=np.float32),
+            history=[window["snapshots"]["0"], window["snapshots"]["1"]],
+        )
+    validated = calibration.validate_pair(
+        {"pair_id": pair_id, "trace_id": "trace"},
+        {"A": left, "B": right},
+        parent_pid=1,
+    )
+    assert validated.valid is True
+
+
+def test_panda_gripper_positive_command_and_physical_closed_state_are_closed() -> None:
+    calibration = _module()
+    negative = np.zeros(7, dtype=np.float32)
+    negative[-1] = -1.0
+    positive = negative.copy()
+    positive[-1] = 1.0
+    assert calibration._close_command(_snapshot(49), negative) is False
+    assert calibration._close_command(_snapshot(49), positive) is True
+    assert calibration._close_command(_snapshot(49), None) is True
+    opened = _snapshot(49)
+    opened["invariants"]["gripper"]["current_action"] = np.asarray([1.0, -1.0])
+    assert calibration._close_command(opened, None) is False
+
+
+def test_strict_terminal_requires_predicate_transition_proof_but_accepts_missing_raw_reason() -> None:
+    calibration = _module()
+    terminal = dict(calibration.DEFAULT_TERMINAL_CONTRACT)
+    terminal["official_evidence"] = {
+        "source": "missing",
+        "returned_step": True,
+        "terminated": True,
+        "truncated": False,
+        "raw_reason": None,
+        "semantic_derivation": {
+            "derived": True,
+            "predicate_transition": True,
+            "frozen_terminal_step": True,
+            "success": True,
+            "predicate_evidence": {
+                "available": True,
+                "previous": [False],
+                "current": [True],
+                "predicate_transition": True,
+            },
+        },
+    }
+    calibration._validate_terminal(terminal, calibration.DEFAULT_TERMINAL_CONTRACT, require_official_evidence=True)
+    terminal["official_evidence"].pop("semantic_derivation")
+    with pytest.raises(calibration.ProtocolError, match="semantic|predicate"):
+        calibration._validate_terminal(
+            terminal,
+            calibration.DEFAULT_TERMINAL_CONTRACT,
+            require_official_evidence=True,
+        )
+
+
 def test_grouped_envelopes_split_exact_semantics_from_floating_and_renderer_metrics() -> None:
     calibration = _module()
     pair_results = []
@@ -606,6 +676,11 @@ def test_grouped_envelopes_split_exact_semantics_from_floating_and_renderer_metr
     assert envelopes.physics["coverage"]["n_pairs"] == 20
     assert envelopes.renderer["coverage"]["group_count"] > 0
     assert envelopes.renderer["groups"]["agentview"]["render_rgb"]["free_motion"]["0"]["exact_only"] is True
+    assert any(
+        quantity.startswith("observation.")
+        for regime in envelopes.physics["groups"].values()
+        for quantity in regime
+    )
     semantic = envelopes.discrete
     assert semantic["categorical_gate"] is True
     assert semantic["contact_identity_exact"] is True
@@ -635,6 +710,83 @@ def test_config_and_registry_hash_drift_is_refused_before_process_runner(tmp_pat
     with pytest.raises(calibration.ProvenanceError, match="config|hash"):
         calibration.run_calibration(prepared, process_runner=lambda attempt: calls.append(attempt))
     assert calls == []
+
+
+def test_worker_rejects_config_drift_before_constructing_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibration = _module()
+    prepared, payload, config_path, _tape = _prepared(calibration, tmp_path, monkeypatch)
+    pair = prepared.pair_registry["pairs"][0]
+    request = calibration._prepare_attempt(prepared, pair, "A")
+    job_path = tmp_path / "job.json"
+    result_path = tmp_path / "result.json"
+    calibration.write_json_atomic(job_path, request)
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["pair_count"] = 19
+    config_path.write_text(calibration.canonical_json(config) + "\n", encoding="utf-8")
+    monkeypatch.setattr(calibration, "_load_verified_registry", lambda _path: deepcopy(payload))
+    constructed: list[bool] = []
+    monkeypatch.setattr(
+        calibration,
+        "_construct_adapter",
+        lambda _config: constructed.append(True),
+    )
+
+    return_code = calibration._worker_main(job_path, result_path)
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert return_code != 0
+    assert constructed == []
+    assert "config" in result["error"].lower()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("expected_run_spec_sha256", "0" * 64, "run specification"),
+        ("expected_registry_sha256", "0" * 64, "registry"),
+        ("ordinal", 99, "schedule"),
+        ("action_tape_sha256", "0" * 64, "tape"),
+    ],
+)
+def test_worker_rejects_run_registry_schedule_and_tape_drift_before_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: Any,
+    message: str,
+) -> None:
+    calibration = _module()
+    prepared, payload, _config_path, _tape = _prepared(calibration, tmp_path, monkeypatch)
+    pair = prepared.pair_registry["pairs"][0]
+    request = calibration._prepare_attempt(prepared, pair, "A")
+    request[field] = value
+    job_path = tmp_path / f"{field}.job.json"
+    result_path = tmp_path / f"{field}.result.json"
+    calibration.write_json_atomic(job_path, request)
+    monkeypatch.setattr(calibration, "_load_verified_registry", lambda _path: deepcopy(payload))
+    constructed: list[bool] = []
+    monkeypatch.setattr(calibration, "_construct_adapter", lambda _config: constructed.append(True))
+
+    return_code = calibration._worker_main(job_path, result_path)
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert return_code != 0
+    assert constructed == []
+    assert message in result["error"].lower()
+
+
+def test_array_publication_uses_content_addressed_npy_references(tmp_path: Path) -> None:
+    calibration = _module()
+    payload = {"nested": {"array": np.arange(6, dtype=np.float32).reshape(2, 3)}}
+    published, records = calibration._materialize_array_artifacts(payload, tmp_path / "arrays")
+    reference = published["nested"]["array"]
+    assert reference["__ndarray_ref__"] is True
+    assert "data" not in reference
+    assert records and records[0]["sha256"] == reference["sha256"]
+    artifact = Path(records[0]["path"])
+    assert calibration.verify_artifact_hash(artifact, reference["sha256"])
+    np.testing.assert_array_equal(np.load(artifact, allow_pickle=False), payload["nested"]["array"])
 
 
 def test_direct_script_invocation_has_no_pythonpath_requirement() -> None:
@@ -761,6 +913,16 @@ def test_strict_quantity_selection_rejects_missing_required_roots() -> None:
                 },
                 parent_pid=1,
             )
+        )
+    with pytest.raises(calibration.NullCalibrationError, match="required|root|missing"):
+        calibration.build_envelopes(
+            pair_results,
+            required_pair_ids=[f"m1n0-pair-{index:03d}" for index in range(20)],
+            config={
+                "strict_runtime_contract": True,
+                "quantity_selection": {"root_patterns": list(calibration.STRICT_QUANTITY_ROOTS)},
+                "invariants": {"required_roots": list(calibration.STRICT_INVARIANT_ROOTS)},
+            },
         )
 
 
