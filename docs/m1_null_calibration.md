@@ -61,10 +61,29 @@ Contact, grasp, and carried evidence is derived from snapshots and frozen
 controls rather than regime labels.
 
 Floating physics variability is grouped by regime × quantity × horizon using
-the existing hard-gate envelope builder.  Renderer output is grouped by
-camera × observation key × regime × horizon.  Bitwise-identical duplicate
-controls publish exact-only RGB groups; nonzero RGB differences publish their
-differing-pixel, maximum, and mean metrics without changing physics gates.
+the existing hard-gate envelope builder.  This includes every non-RGB numeric
+leaf in the official observation tree; the observation keys, dtypes, and
+shapes remain exact structural gates.  RGB leaves are renderer-only.  Renderer
+output is grouped by camera × observation key × regime × horizon.
+Bitwise-identical duplicate controls publish exact-only RGB groups; nonzero
+RGB differences publish their differing-pixel, maximum, and mean metrics
+without changing physics gates.
+
+The contact and grasp requirements are continuation-aware: a capture window
+may first satisfy its semantic predicate at horizon 1 (the frozen contact
+window begins at step 43 and first contact is at step 44), while every
+horizon's diagnostics remains persisted.  Panda gripper commands use the
+official `-1 = open`, `+1 = closed` convention.  A predicate-transition
+terminal is accepted only with an independent successful false-to-true
+predicate proof; any generic or missing raw wrapper reason is retained as raw
+evidence rather than treated as semantic proof.
+
+Before constructing an environment, each worker verifies the config contract,
+source-registry canonical SHA, run-spec and pair-registry self-hashes, exact
+scheduled attempt binding, and action-tape path/SHA binding.  Full invariant
+and official-observation arrays are published once as atomic, no-pickle,
+content-addressed `.npy` sidecars.  JSON registries and measurements retain
+references and hashes so the evidence can be independently reconstructed.
 
 The immutable output bundle contains the run specification, pair registry,
 one artifact per attempt, pair measurements, grouped physics and renderer
@@ -72,4 +91,3 @@ envelopes, and `terminal_manifest.json`.  A terminal status is `PASS` only
 when all 20 pairs are complete, independent, semantically equal, contact-rich
 coverage is present, all groups are covered, and every artifact hash verifies;
 otherwise it is `BLOCKED` with the causal failure retained.
-

@@ -13,6 +13,7 @@ import argparse
 import copy
 from dataclasses import dataclass, field
 import hashlib
+import io
 import json
 import math
 import os
@@ -142,20 +143,28 @@ class NullCalibrationError(CalibrationError):
 
 
 def _json_safe(value: Any) -> Any:
-    """Encode finite values without pickle while retaining array metadata."""
+    """Encode finite values without pickle or inline array payloads.
+
+    Arrays are represented by their immutable content digest for canonical
+    payload hashing.  Published JSON documents call
+    :func:`_materialize_array_artifacts` first, so the on-disk representation
+    is an explicit content-addressed sidecar reference rather than a large
+    nested JSON list.
+    """
 
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, np.ndarray):
         if value.dtype.kind == "O":
             raise TypeError("object arrays are not publication values")
-        if value.dtype.kind in {"f", "c"} and not np.all(np.isfinite(value)):
+        array = np.ascontiguousarray(value)
+        if array.dtype.kind in {"f", "c"} and not np.all(np.isfinite(array)):
             raise ValueError("publication arrays must be finite")
         return {
-            "__ndarray__": True,
-            "dtype": value.dtype.str,
-            "shape": list(value.shape),
-            "data": value.tolist(),
+            "__ndarray_digest__": True,
+            "dtype": array.dtype.str,
+            "shape": list(array.shape),
+            "sha256": sha256_bytes(array.tobytes(order="C")),
         }
     if isinstance(value, np.generic):
         return _json_safe(value.item())
@@ -175,7 +184,32 @@ def _json_safe(value: Any) -> Any:
 
 
 def _json_restore(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value
     if isinstance(value, Mapping):
+        if value.get("__ndarray_ref__") is True:
+            path_value = value.get("path")
+            expected_sha = value.get("sha256")
+            if not isinstance(path_value, (str, Path)) or not isinstance(expected_sha, str):
+                raise ProvenanceError("invalid NumPy sidecar reference")
+            target = Path(path_value)
+            try:
+                verify_artifact_hash(target, expected_sha)
+                array = np.load(target, allow_pickle=False)
+            except Exception as exc:
+                raise ProvenanceError(f"could not load NumPy sidecar {target}: {exc}") from exc
+            array = np.ascontiguousarray(np.asarray(array)).copy()
+            try:
+                expected_dtype = np.dtype(str(value["dtype"]))
+                expected_shape = tuple(int(item) for item in value["shape"])
+            except Exception as exc:
+                raise ProvenanceError(f"invalid NumPy sidecar metadata: {target}") from exc
+            if array.dtype != expected_dtype or array.shape != expected_shape:
+                raise ProvenanceError(f"NumPy sidecar metadata mismatch: {target}")
+            if array.dtype.kind == "O":
+                raise ProvenanceError(f"NumPy sidecar contains an object array: {target}")
+            array.setflags(write=False)
+            return array
         if value.get("__ndarray__") is True:
             try:
                 array = np.asarray(value["data"], dtype=np.dtype(str(value["dtype"])))
@@ -284,15 +318,102 @@ def _exclusive_bytes(path: str | Path, payload: bytes) -> Path:
     return target
 
 
+def _write_array_sidecar(array: np.ndarray, artifact_root: Path) -> dict[str, Any]:
+    """Write one deterministic, no-pickle NumPy sidecar exactly once."""
+
+    value = np.ascontiguousarray(array)
+    if value.dtype.kind == "O":
+        raise PublicationError("object arrays cannot be published")
+    if value.dtype.kind in {"f", "c"} and not np.all(np.isfinite(value)):
+        raise PublicationError("non-finite arrays cannot be published")
+    stream = io.BytesIO()
+    np.save(stream, value, allow_pickle=False)
+    payload = stream.getvalue()
+    digest = sha256_bytes(payload)
+    artifact_root = artifact_root.resolve()
+    target = artifact_root / f"{digest}.npy"
+    if target.exists() or target.is_symlink():
+        if target.is_symlink() or not target.is_file():
+            raise PublicationError(f"NumPy sidecar path is not a regular file: {target}")
+        verify_artifact_hash(target, digest)
+    else:
+        try:
+            _exclusive_bytes(target, payload)
+        except PublicationError:
+            # Two independent publishers may race on the same content address.
+            # Reuse only if the winner published the exact bytes; never
+            # overwrite or accept a colliding/tampered sidecar.
+            if target.is_symlink() or not target.is_file():
+                raise
+        verify_artifact_hash(target, digest)
+    return {
+        "path": str(target),
+        "sha256": digest,
+        "size": len(payload),
+        "dtype": value.dtype.str,
+        "shape": list(value.shape),
+        "format": "npy",
+        "allow_pickle": False,
+        "verified": True,
+    }
+
+
+def _materialize_array_artifacts(
+    value: Any, artifact_root: str | Path
+) -> tuple[Any, list[dict[str, Any]]]:
+    """Replace every ndarray with a reconstructible content-addressed ref.
+
+    The returned object contains only JSON-safe values and sidecar references;
+    the input object is never mutated.  Equal arrays in one publication share
+    one sidecar record.
+    """
+
+    root = Path(artifact_root)
+    records: dict[str, dict[str, Any]] = {}
+
+    def visit(node: Any) -> Any:
+        if isinstance(node, np.ndarray):
+            record = _write_array_sidecar(node, root)
+            records.setdefault(record["sha256"], record)
+            return {
+                "__ndarray_ref__": True,
+                "path": record["path"],
+                "sha256": record["sha256"],
+                "dtype": record["dtype"],
+                "shape": record["shape"],
+                "format": record["format"],
+                "allow_pickle": False,
+            }
+        if isinstance(node, Mapping):
+            if any(type(key) is not str for key in node):
+                raise PublicationError("publication mapping keys must be strings")
+            return {key: visit(child) for key, child in node.items()}
+        if isinstance(node, tuple):
+            return [visit(child) for child in node]
+        if isinstance(node, list):
+            return [visit(child) for child in node]
+        return node
+
+    return visit(value), list(records.values())
+
+
 def write_json_atomic(path: str | Path, value: Mapping[str, Any]) -> dict[str, Any]:
     """Write canonical JSON exactly once and return its content hash."""
 
-    payload = (canonical_json(value) + "\n").encode("utf-8")
+    materialized, array_artifacts = _materialize_array_artifacts(
+        value, Path(path).parent / "arrays"
+    )
+    payload = (canonical_json(materialized) + "\n").encode("utf-8")
     target = _exclusive_bytes(path, payload)
     digest = sha256_bytes(payload)
     if sha256_file(target) != digest:
         raise PublicationError(f"published artifact hash could not be verified: {target}")
-    return {"path": str(target), "sha256": digest, "size": len(payload)}
+    return {
+        "path": str(target),
+        "sha256": digest,
+        "size": len(payload),
+        "array_artifacts": array_artifacts,
+    }
 
 
 def _load_document(path: str | Path) -> dict[str, Any]:
@@ -313,7 +434,10 @@ def _load_document(path: str | Path) -> dict[str, Any]:
             raise ProvenanceError(f"could not parse YAML document {target}: {exc}") from exc
     if not isinstance(parsed, Mapping):
         raise ProvenanceError(f"document must contain a mapping: {target}")
-    return dict(parsed)
+    restored = _json_restore(parsed)
+    if not isinstance(restored, Mapping):
+        raise ProvenanceError(f"document did not restore to a mapping: {target}")
+    return dict(restored)
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -1134,13 +1258,40 @@ def _validate_terminal(
         evidence = terminal.get("official_evidence")
         if not isinstance(evidence, Mapping):
             raise ProtocolError("terminal official evidence is missing")
-        if evidence.get("source") not in {"step_result", "step_info", "adapter"}:
+        source = evidence.get("source")
+        if source not in {"step_result", "step_info", "adapter", "missing"}:
             raise ProtocolError("terminal official evidence source is invalid")
         if evidence.get("returned_step") is not True:
             raise ProtocolError("terminal official evidence is not tied to returned step")
         for field_name in ("terminated", "truncated"):
-            if evidence.get(field_name) is not terminal[field_name]:
+            if not _exact_equal(evidence.get(field_name), terminal[field_name]):
                 raise ProtocolError(f"terminal official evidence {field_name} differs")
+        semantic = evidence.get("semantic_derivation")
+        if terminal["termination_reason"] == "predicate_transition":
+            # LIBERO/LeRobot may report only a generic wrapper termination or
+            # no raw reason at all.  The semantic claim is valid only when the
+            # adjacent official predicate frames independently prove the
+            # false-to-true transition at the frozen successful terminal step.
+            if not isinstance(semantic, Mapping):
+                raise ProtocolError(
+                    "predicate_transition terminal lacks independent semantic proof"
+                )
+            predicate_evidence = semantic.get("predicate_evidence")
+            if not (
+                semantic.get("derived") is True
+                and semantic.get("frozen_terminal_step") is True
+                and semantic.get("success") is True
+                and semantic.get("predicate_transition") is True
+                and isinstance(predicate_evidence, Mapping)
+                and predicate_evidence.get("available") is True
+                and predicate_evidence.get("predicate_transition") is True
+            ):
+                raise ProtocolError(
+                    "predicate_transition terminal lacks independent predicate proof"
+                )
+            semantic_reason = semantic.get("semantic_reason")
+            if semantic_reason is not None and semantic_reason != "predicate_transition":
+                raise ProtocolError("terminal semantic proof reason differs")
     if expected is not None:
         for field_name in TERMINAL_FIELDS:
             if not _exact_equal(terminal[field_name], expected[field_name]):
@@ -1219,6 +1370,41 @@ def _selected_numeric_leaves(snapshot: Any, roots: Sequence[str]) -> dict[str, n
             continue
         for path, value in _numeric_leaves(invariants[root], root).items():
             result[path] = value
+    # Official observation-tree numeric leaves are physics quantities too,
+    # except RGB images, which belong exclusively to the renderer envelope.
+    # Keep their namespace distinct from invariant roots so the envelope can
+    # be independently reconstructed by regime and continuation horizon.
+    raw_observation = snapshot.get("raw_observation") if isinstance(snapshot, Mapping) else None
+
+    def visit_observation(value: Any, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                visit_observation(child, f"{path}.{key}" if path else str(key))
+            return
+        if isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                visit_observation(child, f"{path}[{index}]")
+            return
+        try:
+            array = np.asarray(value)
+        except Exception:
+            return
+        if array.dtype.kind not in {"b", "i", "u", "f", "c"} or array.size == 0:
+            return
+        if array.dtype.kind in {"f", "c"} and not np.all(np.isfinite(array)):
+            return
+        # Official camera leaves are excluded by semantic key even if a
+        # backend exposes them in a non-uint8 dtype.  Unknown uint8 image-like
+        # leaves are also renderer-only; strict RGB key validation occurs in
+        # _renderer_images.
+        if _renderer_camera_for_key(path) is not None or (
+            array.dtype == np.dtype("uint8") and array.ndim >= 2
+        ):
+            return
+        result[f"observation.{path}"] = np.ascontiguousarray(array).copy()
+
+    if raw_observation is not None:
+        visit_observation(raw_observation, "")
     return result
 
 
@@ -1246,7 +1432,11 @@ def _close_command(snapshot: Any, action: Any = None) -> bool:
         try:
             values = np.asarray(action, dtype=np.float32).reshape(-1)
             if values.size >= 7:
-                return bool(values[6] < 0.0)
+                # The pinned robosuite PandaGripper contract is -1=open,
+                # +1=closed.  Keep the final command component as the
+                # semantic scalar even when a persisted gripper state has two
+                # opposing finger channels.
+                return bool(values[6] > 0.0)
         except Exception:
             pass
     current = _invariants(snapshot).get("gripper", {})
@@ -1254,7 +1444,13 @@ def _close_command(snapshot: Any, action: Any = None) -> bool:
         value = current.get("current_action")
         if value is not None:
             try:
-                return bool(np.min(np.asarray(value, dtype=np.float64)) < 0.0)
+                values = np.asarray(value, dtype=np.float64).reshape(-1)
+                if values.size:
+                    # PandaGripper.current_action is [left, right] and its
+                    # right channel carries the same open/closed sign as the
+                    # one-dimensional command.  Do not infer closure from a
+                    # minimum over the opposing channels.
+                    return bool(values[-1] > 0.0)
             except Exception:
                 pass
     return False
@@ -1513,7 +1709,10 @@ def validate_pair(
             reasons.append(f"{side} output payload SHA is missing")
         if strict and not isinstance(artifact_sha, str):
             reasons.append(f"{side} actual artifact SHA is missing")
-        if output_sha is not None:
+        # The strict worker contract binds both payload and sidecar hashes.
+        # Lightweight non-strict fixtures may be edited in-memory to exercise
+        # regime diagnostics and do not carry an immutable artifact record.
+        if output_sha is not None and (strict or artifact_sha is not None):
             if artifact_sha is not None:
                 artifact_path = attempt.get("artifact_path")
                 if artifact_path is None:
@@ -1686,6 +1885,26 @@ def validate_pair(
             reasons.append(f"window {regime} snapshot coordinate sets differ or are empty")
             discrete["categorical_gate"] = False
             continue
+        # A frozen capture offset denotes the beginning of a continuation
+        # window, not a requirement that the semantic event already hold at
+        # horizon zero.  In particular, the contact window is captured at
+        # step 43 and first contact is observed at step 44 (horizon one).
+        # Derive the requirement once over the complete window while retaining
+        # the per-horizon evidence below for diagnostics and envelope grouping.
+        left_history = [lsnap[step] for step in sorted(lsnap)]
+        right_history = [rsnap[step] for step in sorted(rsnap)]
+        left_window_requirements = _window_regime_requirements(
+            regime, left_history, strict=strict
+        )
+        right_window_requirements = _window_regime_requirements(
+            regime, right_history, strict=strict
+        )
+        if left_window_requirements != right_window_requirements:
+            discrete["regime_exact"] = False
+            discrete["categorical_gate"] = False
+            message = f"{regime} continuation evidence differs between A and B"
+            discrete["divergences"].append(message)
+            reasons.append(message)
         for horizon in sorted(set(lsnap) & set(rsnap)):
             if strict:
                 for side, snapshot in (("A", lsnap[horizon]), ("B", rsnap[horizon])):
@@ -1793,7 +2012,10 @@ def validate_pair(
                                 )
                 left_metadata = lsnap[horizon].get("observation_metadata")
                 right_metadata = rsnap[horizon].get("observation_metadata")
-                if not _exact_equal(left_metadata, right_metadata):
+                if not _exact_equal(
+                    _observation_structure(left_metadata),
+                    _observation_structure(right_metadata),
+                ):
                     discrete["observation_exact"] = False
                     discrete["categorical_gate"] = False
                     message = f"{regime}@{horizon} observation structure differs"
@@ -1810,6 +2032,7 @@ def validate_pair(
                         snapshots[horizon],
                         action=action,
                         history=history,
+                        strict=strict,
                     )
                     persisted = window.get("evidence")
                     if not isinstance(persisted, Mapping):
@@ -1818,10 +2041,19 @@ def validate_pair(
                     elif horizon == max(snapshots) and not _exact_equal(persisted, derived):
                         discrete["categorical_gate"] = False
                         reasons.append(f"{side} {regime}@{horizon} bilateral evidence is inconsistent")
+                    # Use the full continuation-window proof for semantic
+                    # regime gates.  ``derived`` remains horizon-local and is
+                    # retained in the persisted evidence comparison above.
                     requirements = {
-                        "contact": bool(derived.get("contact", {}).get("present")),
-                        "grasp": bool(derived.get("grasp", {}).get("present")),
-                        "carried": bool(derived.get("carried", {}).get("present")),
+                        "contact": bool(left_window_requirements["contact"])
+                        if side == "A"
+                        else bool(right_window_requirements["contact"]),
+                        "grasp": bool(left_window_requirements["grasp"])
+                        if side == "A"
+                        else bool(right_window_requirements["grasp"]),
+                        "carried": bool(left_window_requirements["carried"])
+                        if side == "A"
+                        else bool(right_window_requirements["carried"]),
                     }
                     required = {
                         "contact": regime in {"contact", "grasp"},
@@ -2280,6 +2512,22 @@ def _observation_metadata(value: Any) -> dict[str, Any]:
     return {"schema_version": 1, "tree": visit(value, ""), "arrays": arrays}
 
 
+def _observation_structure(value: Any) -> Any:
+    """Drop numeric content hashes while retaining official tree structure."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _observation_structure(child)
+            for key, child in value.items()
+            if key != "sha256"
+        }
+    if isinstance(value, list):
+        return [_observation_structure(child) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_observation_structure(child) for child in value)
+    return value
+
+
 def _adapter_rgb(adapter: Any) -> np.ndarray | None:
     renderer = getattr(adapter, "render_rgb", None)
     if not callable(renderer):
@@ -2556,6 +2804,7 @@ def execute_attempt(
                 snapshot_history[-1],
                 action=_snapshot_action(snapshot_history[-1]),
                 history=snapshot_history,
+                strict=strict,
             )
             output_windows[str(window["window_id"])] = {
                 "window_id": str(window["window_id"]),
@@ -2713,6 +2962,10 @@ def _prepare_attempt(prepared: PreparedRun, pair: Mapping[str, Any], side: str) 
         "runtime_identity_contract": copy.deepcopy(prepared.run_spec.get("runtime_identity_contract", {})),
         "expected_registry_sha256": prepared.run_spec["registry_sha256"],
         "expected_run_spec_sha256": prepared.run_spec["run_spec_sha256"],
+        "expected_config_sha256": prepared.run_spec["config_sha256"],
+        "run_spec_path": str(prepared.run_spec_path),
+        "pair_registry_path": str(prepared.pair_registry_path),
+        "pair_registry_sha256": prepared.pair_registry["pair_registry_sha256"],
         "python": prepared.run_spec["python"],
         "output_root": prepared.run_spec["output_root"],
         "parent_pid": os.getpid(),
@@ -2725,6 +2978,133 @@ def _tape_path(registry: Mapping[str, Any], trace_id: str) -> Path:
     if value is None:
         raise ProvenanceError("frozen tape path is missing")
     return _resolve_path(value)
+
+
+def _same_resolved_path(left: Any, right: Any) -> bool:
+    try:
+        return Path(str(left)).resolve() == Path(str(right)).resolve()
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+def _verify_worker_binding(
+    job: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], np.ndarray, dict[str, Any], dict[str, Any]]:
+    """Verify every persisted worker contract before environment construction."""
+
+    config_path_value = job.get("config_path")
+    if not isinstance(config_path_value, (str, Path)) or not str(config_path_value).strip():
+        raise ProvenanceError("worker job has no config path")
+    config_path = _resolve_path(config_path_value).resolve()
+    config = load_config(config_path)
+    expected_config_sha = job.get("expected_config_sha256", job.get("config_sha256"))
+    if not isinstance(expected_config_sha, str) or len(expected_config_sha) != 64:
+        raise ProvenanceError("worker job has no expected config contract hash")
+    actual_config_sha = config_contract_sha256(config)
+    if actual_config_sha.lower() != expected_config_sha.lower():
+        raise ProvenanceError(
+            f"worker config contract hash drift: {actual_config_sha} != {expected_config_sha}"
+        )
+    declared_config_sha = config.get("config_sha256")
+    if declared_config_sha is not None and str(declared_config_sha).lower() != actual_config_sha.lower():
+        raise ProvenanceError("worker config self-hash is invalid")
+
+    run_spec_path_value = job.get("run_spec_path")
+    if not isinstance(run_spec_path_value, (str, Path)) or not str(run_spec_path_value).strip():
+        raise ProvenanceError("worker job has no run specification path")
+    run_spec_path = _resolve_path(run_spec_path_value).resolve()
+    run_spec = _load_document(run_spec_path)
+    if not verify_self_hash(run_spec, "run_spec_sha256"):
+        raise ProvenanceError("worker run specification self-hash is invalid")
+    expected_run_spec_sha = job.get("expected_run_spec_sha256")
+    if not isinstance(expected_run_spec_sha, str) or run_spec["run_spec_sha256"].lower() != expected_run_spec_sha.lower():
+        raise ProvenanceError("worker run specification hash differs from the scheduled contract")
+    if not _same_resolved_path(run_spec.get("config_path"), config_path):
+        raise ProvenanceError("worker config path is not bound to the run specification")
+    if run_spec.get("config_sha256", "").lower() != actual_config_sha.lower():
+        raise ProvenanceError("worker run specification config hash differs from the loaded config")
+
+    registry_path_value = job.get("registry_path")
+    if not isinstance(registry_path_value, (str, Path)) or not str(registry_path_value).strip():
+        raise ProvenanceError("worker job has no source registry path")
+    registry_path = _resolve_path(registry_path_value).resolve()
+    expected_registry_sha = job.get("expected_registry_sha256")
+    if not isinstance(expected_registry_sha, str) or len(expected_registry_sha) != 64:
+        raise ProvenanceError("worker job has no expected source registry hash")
+    registry = _load_verified_registry(registry_path)
+    _verify_registry_payload(registry, registry_path, expected_registry_sha)
+    if str(run_spec.get("registry_sha256", "")).lower() != expected_registry_sha.lower():
+        raise ProvenanceError("worker run specification source registry hash differs")
+    if not _same_resolved_path(run_spec.get("source_registry_path"), registry_path):
+        raise ProvenanceError("worker source registry path is not bound to the run specification")
+
+    pair_registry_path_value = job.get("pair_registry_path")
+    if not isinstance(pair_registry_path_value, (str, Path)) or not str(pair_registry_path_value).strip():
+        raise ProvenanceError("worker job has no pair registry path")
+    pair_registry_path = _resolve_path(pair_registry_path_value).resolve()
+    pair_registry = _load_document(pair_registry_path)
+    if not verify_self_hash(pair_registry, "pair_registry_sha256"):
+        raise ProvenanceError("worker pair registry self-hash is invalid")
+    expected_pair_registry_sha = job.get("pair_registry_sha256")
+    if not isinstance(expected_pair_registry_sha, str) or pair_registry["pair_registry_sha256"].lower() != expected_pair_registry_sha.lower():
+        raise ProvenanceError("worker pair registry hash differs from the scheduled contract")
+    if not _same_resolved_path(run_spec.get("pair_registry_path"), pair_registry_path):
+        raise ProvenanceError("worker pair registry path is not bound to the run specification")
+    if not _same_resolved_path(pair_registry.get("run_spec_path"), run_spec_path):
+        raise ProvenanceError("worker pair registry run-spec path is not bound")
+    if not _same_resolved_path(pair_registry.get("source_registry_path"), registry_path):
+        raise ProvenanceError("worker pair registry source path is not bound")
+    _validate_frozen_schedule(
+        run_spec,
+        pair_registry,
+        source_registry=registry,
+        config=config,
+    )
+
+    pair_id = str(job.get("pair_id", ""))
+    side = str(job.get("side", ""))
+    if pair_id not in EXPECTED_PAIR_IDS or side not in {"A", "B"}:
+        raise ProvenanceError("worker job pair/side is outside the frozen schedule")
+    pairs = pair_registry.get("pairs")
+    scheduled_pair = next(
+        (item for item in pairs if isinstance(item, Mapping) and item.get("pair_id") == pair_id),
+        None,
+    ) if isinstance(pairs, Sequence) else None
+    if not isinstance(scheduled_pair, Mapping):
+        raise ProvenanceError("worker pair is not in the frozen pair registry")
+    scheduled_attempt = next(
+        (
+            item
+            for item in scheduled_pair.get("attempts", ())
+            if isinstance(item, Mapping) and item.get("side") == side
+        ),
+        None,
+    )
+    if not isinstance(scheduled_attempt, Mapping):
+        raise ProvenanceError("worker attempt side is not in the frozen pair registry")
+    for field_name in ("attempt_id", "pair_id", "side", "ordinal", "status", "trace_id"):
+        if field_name in scheduled_attempt and not _exact_equal(
+            job.get(field_name), scheduled_attempt.get(field_name)
+        ):
+            raise ProvenanceError(f"worker schedule binding differs for {field_name}")
+    if str(job.get("trace_id")) != str(run_spec.get("trace_id")):
+        raise ProvenanceError("worker trace ID differs from the run specification")
+    if str(job.get("action_tape_sha256", "")).lower() != str(run_spec["action_tape"]["sha256"]).lower():
+        raise ProvenanceError("worker action tape hash differs from the run specification")
+
+    trace_id = str(run_spec["trace_id"])
+    tape, tape_sha = _load_tape(registry, config=config, trace_id=trace_id)
+    action_contract = run_spec.get("action_tape")
+    if not isinstance(action_contract, Mapping) or str(action_contract.get("sha256", "")).lower() != tape_sha.lower():
+        raise ProvenanceError("worker persisted tape differs from the run specification")
+    if list(action_contract.get("shape", ())) != list(ACTION_SHAPE) or str(
+        action_contract.get("dtype", "")
+    ) not in {"float32", "<f4", "|f4"}:
+        raise ProvenanceError("worker run-spec tape shape/dtype is not frozen")
+    expected_tape_path = _tape_path(registry, trace_id)
+    if job.get("tape_path") is not None and not _same_resolved_path(job.get("tape_path"), expected_tape_path):
+        raise ProvenanceError("worker tape path is not bound to the source registry")
+    return config, registry, tape, run_spec, pair_registry
 
 
 def _verify_prepared(prepared: PreparedRun) -> tuple[dict[str, Any], dict[str, Any], np.ndarray]:
@@ -3059,10 +3439,30 @@ def run_calibration(
             artifact_verified = False
             try:
                 verified_record = _verified_artifact_record(artifact_path, artifact_record["sha256"])
+                array_artifacts = []
+                for sidecar in artifact_record.get("array_artifacts", []):
+                    if not isinstance(sidecar, Mapping):
+                        raise PublicationError("attempt sidecar record is malformed")
+                    sidecar_path = sidecar.get("path")
+                    sidecar_sha = sidecar.get("sha256")
+                    if not isinstance(sidecar_path, (str, Path)) or not isinstance(sidecar_sha, str):
+                        raise PublicationError("attempt sidecar record lacks path/SHA")
+                    verify_artifact_hash(sidecar_path, sidecar_sha)
+                    array_artifacts.append(
+                        {
+                            "path": str(sidecar_path),
+                            "sha256": sidecar_sha,
+                            "size": int(sidecar.get("size", Path(sidecar_path).stat().st_size)),
+                            "format": "npy",
+                            "allow_pickle": False,
+                            "verified": True,
+                        }
+                    )
                 attempt_artifacts.append(
                     {
                         "attempt_id": str(request["attempt_id"]),
                         **verified_record,
+                        "array_artifacts": array_artifacts,
                     }
                 )
                 artifact_verified = bool(verified_record["verified"])
@@ -3129,6 +3529,7 @@ def run_calibration(
         + integrity_errors,
     }
     envelope_paths: dict[str, str] = {}
+    envelope_publication_records: dict[str, dict[str, Any]] = {}
     if valid_count == PAIR_COUNT:
         try:
             envelope = build_envelopes(validations, required_pair_ids=[str(pair["pair_id"]) for pair in pairs], config=config)
@@ -3139,11 +3540,15 @@ def run_calibration(
             }
             physics_path = output_root / "physics_envelope.json"
             renderer_path = output_root / "renderer_envelope.json"
-            write_json_atomic(physics_path, envelope.physics)
-            write_json_atomic(renderer_path, envelope.renderer)
+            physics_publication = write_json_atomic(physics_path, envelope.physics)
+            renderer_publication = write_json_atomic(renderer_path, envelope.renderer)
             envelope_paths = {
                 "physics": str(physics_path),
                 "renderer": str(renderer_path),
+            }
+            envelope_publication_records = {
+                "physics": physics_publication,
+                "renderer": renderer_publication,
             }
             result["envelope_paths"] = envelope_paths
             result["gates"].update({"regime_coverage": True, "physics": True, "renderer": True})
@@ -3151,6 +3556,9 @@ def run_calibration(
         except Exception as exc:
             result["errors"].append(f"envelope construction failed: {type(exc).__name__}: {exc}")
     final_pair_registry_path = output_root / "final_pair_registry.json"
+    attempt_artifacts_by_id = {
+        str(item["attempt_id"]): item for item in attempt_artifacts if isinstance(item, Mapping)
+    }
     final_pairs = []
     for pair, validation in zip(pairs, validations):
         pair_id = str(pair["pair_id"])
@@ -3158,8 +3566,22 @@ def run_calibration(
             {
                 "pair_id": pair_id,
                 "trace_id": pair.get("trace_id"),
+                # Attempt payloads (including full invariant/observation
+                # arrays) live exactly once in their immutable artifacts.
+                # The final registry is a reconstructible index, not a second
+                # copy of the trajectory evidence.
                 "attempts": [
-                    copy.deepcopy(by_pair.get(pair_id, {}).get(side, {"attempt_id": f"{pair_id}-{side}", "side": side, "status": "missing"}))
+                    {
+                        "attempt_id": f"{pair_id}-{side}",
+                        "side": side,
+                        "status": by_pair.get(pair_id, {}).get(side, {}).get("status", "missing"),
+                        "artifact": copy.deepcopy(
+                            attempt_artifacts_by_id.get(
+                                f"{pair_id}-{side}",
+                                {"verified": False, "missing": True},
+                            )
+                        ),
+                    }
                     for side in ("A", "B")
                 ],
                 "validation": validation.to_dict(),
@@ -3196,7 +3618,10 @@ def run_calibration(
             "schema_version": SCHEMA_VERSION,
             "final_pair_registry_sha256": final_pair_registry["final_pair_registry_sha256"],
             "pairs": result["pair_results"],
-            "attempts": attempts,
+            # Validation summaries and immutable artifact references are
+            # sufficient to reconstruct every pair independently; embedding
+            # the raw arrays again would create an unverifiable duplicate.
+            "attempt_artifacts": attempt_artifacts,
         },
     )
     try:
@@ -3245,7 +3670,12 @@ def run_calibration(
         "artifacts": {
             **artifact_records,
             **{
-                name: _verified_artifact_record(path, sha256_file(path))
+                name: {
+                    **_verified_artifact_record(path, sha256_file(path)),
+                    "array_artifacts": list(
+                        envelope_publication_records.get(name, {}).get("array_artifacts", [])
+                    ),
+                }
                 for name, path in envelope_paths.items()
             },
         },
@@ -3471,6 +3901,7 @@ def build_envelopes(
                             lsnap[horizon],
                             action=left_action,
                             history=history_left,
+                            strict=strict_contract,
                         )
                         physics_samples.append(
                             {
@@ -3612,11 +4043,21 @@ def _worker_main(job_path: str | Path, result_path: str | Path | None = None) ->
     job = _load_document(job_path)
     target = Path(result_path) if result_path is not None else Path(job_path).with_suffix(".result.json")
     try:
-        config = load_config(job["config_path"]) if job.get("config_path") else dict(job.get("config", {}))
-        registry = _load_verified_registry(job["registry_path"])
-        trace_id = str(job["trace_id"])
-        tape, _ = _load_tape(registry, config=config, trace_id=trace_id)
-        attempt = {**job, "config": config, "registry": registry, "tape": tape}
+        # All hashes, paths, schedule records, and tape bindings are checked
+        # before the first environment constructor can run.  The embedded job
+        # config/registry are transport hints only; canonical files remain
+        # authoritative.
+        config, registry, tape, run_spec, _pair_registry = _verify_worker_binding(job)
+        trace_id = str(run_spec["trace_id"])
+        attempt = {
+            **job,
+            "config": config,
+            "registry": registry,
+            "tape": tape,
+            "trace_id": trace_id,
+            "action_tape_sha256": run_spec["action_tape"]["sha256"],
+            "terminal_contract": copy.deepcopy(run_spec.get("terminal_contract", {})),
+        }
         result = execute_attempt(attempt)
     except Exception as exc:
         result = _attempt_failure(job, exc)
