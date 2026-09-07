@@ -54,11 +54,26 @@ never count toward the 20 valid pairs.
 
 Attempt artifacts retain process identity, frozen inputs, model/runtime
 fingerprints, full invariant snapshots, official observation-tree images,
-direct renderer RGB, terminal semantics, and protocol counters.  Pair
-validation keeps predicates, success, done/termination timing, discrete
-gripper state, regime coordinates, and contact geom identity as exact gates.
+direct renderer RGB, terminal semantics, and protocol counters.  They also
+publish RuntimeAdapter construction provenance separately from the live
+post-construction forbidden-operation counters: the one seeded reset and any
+construction-time `set_init_state`/settle calls are allowed, while reset,
+set-init, settle, restore, capture, policy/processor, retry, dummy,
+autoreset, and post-terminal calls after construction must all be observed as
+zero.  Pair validation checks this provenance on both sides in addition to
+the raw terminal reason/source evidence and semantic terminal reason.  A
+missing raw wrapper reason is retained as explicit `null` evidence and is
+accepted only when both sides match and the independent predicate proof is
+valid.  Pair validation keeps predicates, success, done/termination timing,
+discrete gripper state, regime coordinates, and contact geom identity as
+exact gates.
 Contact, grasp, and carried evidence is derived from snapshots and frozen
 controls rather than regime labels.
+
+Contact topology is canonicalized by unordered geometry identity while
+retaining duplicate rows.  Contact-distance quantities are canonicalized in
+the same order and are never compared when the A/B contact identity
+multisets differ.
 
 Floating physics variability is grouped by regime × quantity × horizon using
 the existing hard-gate envelope builder.  This includes every non-RGB numeric

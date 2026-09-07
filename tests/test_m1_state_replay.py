@@ -1390,6 +1390,57 @@ def test_reset_provenance_publishes_allowed_construction_phase_separately() -> N
     assert construction["post_construction_forbidden"]["restore"]["observed"] is True
 
 
+def test_reset_provenance_tracks_reset_set_init_and_settle_after_construction() -> None:
+    replay = _module()
+    events: list[str] = []
+    builder, created = _fake_runtime_builder_factory(events)
+    adapter = replay.RuntimeAdapter.construct_fresh(
+        _fake_config(Path("/tmp")), runtime_builder=builder, tape_hash="tape"
+    )
+    initial = adapter.reset_provenance_snapshot()
+    forbidden = initial["construction"]["post_construction_forbidden"]
+    assert {"reset", "set_init_state", "settle"} <= set(forbidden)
+    assert all(forbidden[name]["count"] == 0 for name in ("reset", "set_init_state", "settle"))
+
+    created[-1].reset(seed=2027)
+    refreshed = adapter.reset_provenance_snapshot()
+    assert refreshed["construction"]["post_construction_forbidden"]["reset"]["count"] == 1
+    assert refreshed["construction"]["post_construction_forbidden"]["reset"]["allowed"] is False
+
+
+def test_reset_provenance_counts_nested_construction_init_and_settle_calls() -> None:
+    replay = _module()
+    events: list[str] = []
+
+    class ConstructionCallsEnv(_FakeEnv):
+        def set_init_state(self, value: Any) -> None:
+            self.set_init_state_calls += 1
+            _fake_record(self, "construction_set_init_state")
+
+        def settle(self) -> None:
+            self.settle_calls += 1
+            _fake_record(self, "construction_settle")
+
+        def reset(self, seed: int | None = None) -> tuple[dict[str, int], dict[str, Any]]:
+            result = super().reset(seed=seed)
+            self.set_init_state(None)
+            self.settle()
+            return result
+
+    def builder(config: Mapping[str, Any]) -> dict[str, Any]:
+        child = ConstructionCallsEnv(events)
+        return {"env": _FakeVector(child), "mujoco": _FakeMujoco(child.sim.data, events)}
+
+    adapter = replay.RuntimeAdapter.construct_fresh(
+        _fake_config(Path("/tmp")), runtime_builder=builder, tape_hash="tape"
+    )
+    operations = adapter.reset_provenance["construction"]["operations"]
+    assert operations["reset"]["count"] == 1
+    assert operations["set_init_state"]["count"] == 1
+    assert operations["settle"]["count"] == 1
+    assert adapter.reset_provenance_snapshot()["construction"]["post_construction_forbidden"]["settle"]["count"] == 0
+
+
 def test_terminal_manifest_survives_source_close_failure(tmp_path: Path) -> None:
     replay = _module()
     events: list[str] = []

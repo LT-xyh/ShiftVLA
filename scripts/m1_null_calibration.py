@@ -108,6 +108,7 @@ DEFAULT_TERMINAL_CONTRACT = {
     "truncated": False,
 }
 FORBIDDEN_PROTOCOL_FIELDS = (
+    "reset_count",
     "restore_count",
     "capture_count",
     "policy_calls",
@@ -119,6 +120,19 @@ FORBIDDEN_PROTOCOL_FIELDS = (
     "settle_count",
     "dummy_action_count",
     "autoreset_count",
+)
+POST_CONSTRUCTION_FORBIDDEN_OPERATIONS = (
+    "reset",
+    "set_init_state",
+    "settle",
+    "restore",
+    "capture",
+    "policy_calls",
+    "processor_calls",
+    "retry",
+    "post_terminal_step",
+    "dummy_action",
+    "autoreset",
 )
 
 
@@ -1019,45 +1033,63 @@ def _invariants(snapshot: Any) -> Mapping[str, Any]:
     return {}
 
 
+def _contact_entry(value: Any) -> tuple[tuple[str, str], Any] | None:
+    """Extract one contact identity and its optional numeric distance."""
+
+    if isinstance(value, Mapping):
+        left = value.get("geom1", value.get("first", value.get("a")))
+        right = value.get("geom2", value.get("second", value.get("b")))
+        distance = value.get("distance", value.get("dist"))
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
+        left, right = value[0], value[1]
+        distance = value[2] if len(value) >= 3 else None
+    else:
+        return None
+    if left is None or right is None:
+        return None
+    pair = tuple(sorted((str(left), str(right))))
+    return pair, distance
+
+
+def _canonical_contact_entries(values: Any) -> list[tuple[tuple[str, str], Any]]:
+    """Canonicalize contacts while retaining multiplicity.
+
+    MuJoCo does not promise that equal contact rows are emitted in a stable
+    order.  Identity is therefore sorted by the unordered geometry pair and
+    duplicate rows are retained.  For duplicate identities, a finite distance
+    is only a deterministic tie-breaker; it is not part of discrete contact
+    identity.
+    """
+
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return []
+    entries = [entry for value in values if (entry := _contact_entry(value)) is not None]
+
+    def sort_key(entry: tuple[tuple[str, str], Any]) -> tuple[Any, ...]:
+        pair, distance = entry
+        try:
+            numeric = float(distance)
+            if math.isfinite(numeric):
+                distance_key: tuple[int, float, str] = (0, numeric, "")
+            else:
+                distance_key = (1, 0.0, repr(distance))
+        except (TypeError, ValueError, OverflowError):
+            distance_key = (1, 0.0, repr(distance))
+        return (*pair, *distance_key)
+
+    return sorted(entries, key=sort_key)
+
+
 def _snapshot_contacts(snapshot: Any) -> tuple[tuple[str, str], ...]:
     values = _invariants(snapshot).get("contacts", ())
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-        return ()
-    result: set[tuple[str, str]] = set()
-    for value in values:
-        if isinstance(value, Mapping):
-            left = value.get("geom1", value.get("first", value.get("a")))
-            right = value.get("geom2", value.get("second", value.get("b")))
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
-            left, right = value[0], value[1]
-        else:
-            continue
-        if left is None or right is None:
-            continue
-        pair = (str(left), str(right))
-        result.add(tuple(sorted(pair)))
-    return tuple(sorted(result))
+    return tuple(pair for pair, _distance in _canonical_contact_entries(values))
 
 
 def _contact_records(snapshot: Any) -> tuple[tuple[str, str], ...]:
     """Return actual named contact topology from the invariant snapshot."""
 
     values = _invariants(snapshot).get("contacts", ())
-    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-        return ()
-    result: set[tuple[str, str]] = set()
-    for value in values:
-        if isinstance(value, Mapping):
-            left = value.get("geom1", value.get("first", value.get("a")))
-            right = value.get("geom2", value.get("second", value.get("b")))
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
-            left, right = value[0], value[1]
-        else:
-            continue
-        if left is None or right is None:
-            continue
-        result.add(tuple(sorted((str(left), str(right)))))
-    return tuple(sorted(result))
+    return tuple(pair for pair, _distance in _canonical_contact_entries(values))
 
 
 def _name_contains_token(value: Any, token: str) -> bool:
@@ -1098,6 +1130,78 @@ def _target_object_tokens(snapshot: Any, *, strict: bool = False) -> set[str]:
 def _terminal_semantics(attempt: Mapping[str, Any]) -> dict[str, Any]:
     terminal = attempt.get("terminal")
     return dict(terminal) if isinstance(terminal, Mapping) else {}
+
+
+def _terminal_raw_evidence(terminal: Mapping[str, Any]) -> Any:
+    """Return the authoritative raw-reason evidence, preserving ``None``."""
+
+    if "raw_termination_evidence" in terminal:
+        return terminal.get("raw_termination_evidence")
+    if "official_evidence" in terminal:
+        return terminal.get("official_evidence")
+    return None
+
+
+def _reset_provenance_errors(value: Any, *, strict: bool) -> list[str]:
+    """Validate construction-vs-post-construction provenance evidence."""
+
+    if value is None:
+        return ["reset provenance is missing"] if strict else []
+    if not isinstance(value, Mapping):
+        return ["reset provenance is not a mapping"]
+    construction = value.get("construction")
+    if not isinstance(construction, Mapping):
+        return ["reset provenance construction section is missing"]
+    operations = construction.get("operations")
+    forbidden = construction.get("post_construction_forbidden")
+    errors: list[str] = []
+    if not isinstance(operations, Mapping):
+        errors.append("reset provenance construction operations are missing")
+    else:
+        reset = operations.get("reset")
+        if (
+            not isinstance(reset, Mapping)
+            or reset.get("allowed") is not True
+            or reset.get("observed") is not True
+            or reset.get("count") != 1
+        ):
+            errors.append("reset provenance construction reset is not exactly one allowed operation")
+        for name in ("set_init_state", "settle"):
+            operation = operations.get(name)
+            count = operation.get("count") if isinstance(operation, Mapping) else None
+            valid_count = (
+                not isinstance(count, bool)
+                and isinstance(count, (int, np.integer))
+                and int(count) >= 0
+            )
+            if (
+                not isinstance(operation, Mapping)
+                or operation.get("allowed") is not True
+                or operation.get("observed") is not True
+                or not valid_count
+            ):
+                errors.append(f"reset provenance construction {name} evidence is missing")
+    if not isinstance(forbidden, Mapping):
+        errors.append("reset provenance post-construction forbidden section is missing")
+    else:
+        for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS:
+            operation = forbidden.get(name)
+            if not isinstance(operation, Mapping):
+                errors.append(f"reset provenance forbidden operation is missing: {name}")
+                continue
+            if operation.get("allowed") is not False or operation.get("observed") is not True:
+                errors.append(f"reset provenance marks forbidden operation as allowed: {name}")
+            count = operation.get("count")
+            valid_count = (
+                not isinstance(count, bool)
+                and isinstance(count, (int, np.integer))
+                and int(count) >= 0
+            )
+            if not valid_count:
+                errors.append(f"reset provenance forbidden count is invalid: {name}")
+            elif int(count) != 0:
+                errors.append(f"post-construction forbidden operation observed: {name}={count}")
+    return errors
 
 
 def _predicate_goal_values(snapshot: Any) -> tuple[bool, ...] | None:
@@ -1341,12 +1445,7 @@ def _contact_distance_leaves(value: Any, path: str = "contacts") -> dict[str, np
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return {}
     result: dict[str, np.ndarray] = {}
-    for index, contact in enumerate(value):
-        distance: Any = None
-        if isinstance(contact, Mapping):
-            distance = contact.get("distance", contact.get("dist"))
-        elif isinstance(contact, Sequence) and not isinstance(contact, (str, bytes)) and len(contact) >= 3:
-            distance = contact[2]
+    for index, (_identity, distance) in enumerate(_canonical_contact_entries(value)):
         if distance is None or isinstance(distance, (bool, np.bool_)):
             continue
         try:
@@ -1643,6 +1742,26 @@ def validate_pair(
             elif _pid(attempt.get("ppid")) == pid:
                 reasons.append(f"{side} attempt PPID equals its own PID")
         protocol = _attempt_protocol(attempt)
+        terminal = _terminal_semantics(attempt)
+        provenance = attempt.get("reset_provenance")
+        provenance_errors = _reset_provenance_errors(provenance, strict=strict)
+        for error in provenance_errors:
+            reasons.append(f"{side} {error}")
+        if strict and "post_construction_forbidden" not in protocol:
+            reasons.append(f"{side} protocol post-construction provenance is missing")
+        if isinstance(provenance, Mapping) and isinstance(protocol.get("post_construction_forbidden"), Mapping):
+            construction = provenance.get("construction")
+            expected_forbidden = construction.get("post_construction_forbidden") if isinstance(construction, Mapping) else None
+            if isinstance(expected_forbidden, Mapping) and not _exact_equal(
+                protocol.get("post_construction_forbidden"), expected_forbidden
+            ):
+                reasons.append(f"{side} protocol post-construction provenance disagrees with reset provenance")
+        if strict and not isinstance(terminal, Mapping):
+            reasons.append(f"{side} terminal evidence is missing")
+        if strict and isinstance(terminal, Mapping):
+            for field_name in TERMINAL_FIELDS + ("raw_termination_reason", "raw_termination_evidence", "official_evidence"):
+                if field_name not in terminal:
+                    reasons.append(f"{side} terminal field is missing: {field_name}")
         if strict:
             required_protocol = (
                 "construction_reset_count",
@@ -1651,6 +1770,8 @@ def validate_pair(
                 "step_calls",
                 "render_calls",
                 "invariant_collections",
+                "reset_provenance",
+                "post_construction_forbidden",
             )
             for field_name in required_protocol:
                 if field_name not in protocol:
@@ -1820,6 +1941,31 @@ def validate_pair(
         and str(pair["trace_id"]) != trace_id
     ):
         reasons.append("pair trace_id differs from attempt frozen input")
+
+    left_terminal, right_terminal = _terminal_semantics(left), _terminal_semantics(right)
+    if left_terminal or right_terminal:
+        for field_name in TERMINAL_FIELDS:
+            if not _exact_equal(left_terminal.get(field_name), right_terminal.get(field_name)):
+                reasons.append(f"terminal {field_name} differs between A and B")
+        for field_name in ("raw_termination_reason", "raw_termination_evidence", "official_evidence"):
+            if field_name not in left_terminal and field_name not in right_terminal:
+                continue
+            if not _exact_equal(left_terminal.get(field_name), right_terminal.get(field_name)):
+                reasons.append(f"raw termination authoritative {field_name} differs between A and B")
+        if not _exact_equal(
+            _terminal_raw_evidence(left_terminal), _terminal_raw_evidence(right_terminal)
+        ):
+            reasons.append("raw termination authoritative evidence differs between A and B")
+
+    left_provenance, right_provenance = left.get("reset_provenance"), right.get("reset_provenance")
+    if left_provenance is not None or right_provenance is not None:
+        if not _exact_equal(left_provenance, right_provenance):
+            reasons.append("reset provenance differs between A and B")
+    left_protocol_provenance = _attempt_protocol(left).get("post_construction_forbidden")
+    right_protocol_provenance = _attempt_protocol(right).get("post_construction_forbidden")
+    if left_protocol_provenance is not None or right_protocol_provenance is not None:
+        if not _exact_equal(left_protocol_provenance, right_protocol_provenance):
+            reasons.append("post-construction protocol provenance differs between A and B")
 
     left_windows, right_windows = _window_map(left), _window_map(right)
     if strict:
@@ -2576,8 +2722,39 @@ def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step:
 
     values: dict[str, Any] = {}
     sources: dict[str, str] = {}
+    provenance_getter = getattr(adapter, "reset_provenance_snapshot", None)
+    if callable(provenance_getter):
+        reset_provenance = provenance_getter()
+    else:
+        reset_provenance = getattr(adapter, "reset_provenance", None)
+    if not isinstance(reset_provenance, Mapping):
+        reset_provenance = None
+    construction = reset_provenance.get("construction", {}) if reset_provenance else {}
+    construction_operations = construction.get("operations", {}) if isinstance(construction, Mapping) else {}
+    post_forbidden = (
+        construction.get("post_construction_forbidden", {})
+        if isinstance(construction, Mapping)
+        else {}
+    )
+    if not isinstance(construction_operations, Mapping):
+        construction_operations = {}
+    if not isinstance(post_forbidden, Mapping):
+        post_forbidden = {}
+
+    def provenance_count(operation: str, *, construction_phase: bool = False) -> tuple[Any, str] | None:
+        section = construction_operations if construction_phase else post_forbidden
+        entry = section.get(operation) if isinstance(section, Mapping) else None
+        if not isinstance(entry, Mapping) or "count" not in entry:
+            return None
+        count = entry.get("count")
+        if isinstance(count, bool) or not isinstance(count, (int, np.integer)) or int(count) < 0:
+            raise ProtocolError(f"reset provenance count is invalid: {operation}")
+        phase = "construction" if construction_phase else "post_construction_forbidden"
+        return int(count), f"RuntimeAdapter.reset_provenance.{phase}.{operation}.count"
+
     fields = {
         "construction_reset_count": ("construction_reset_count",),
+        "reset_count": ("reset_count",),
         "restore_count": ("restore_count",),
         "capture_count": ("capture_count",),
         "policy_calls": ("policy_calls",),
@@ -2591,7 +2768,30 @@ def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step:
         "autoreset_count": ("autoreset_count",),
     }
     for field_name, aliases in fields.items():
-        value, source = _adapter_counter(adapter, field_name, *aliases)
+        provenance = None
+        if field_name == "construction_reset_count":
+            provenance = provenance_count("reset", construction_phase=True)
+        else:
+            operation_name = {
+                "reset_count": "reset",
+                "set_init_state_count": "set_init_state",
+                "settle_count": "settle",
+                "restore_count": "restore",
+                "capture_count": "capture",
+                "policy_calls": "policy_calls",
+                "processor_calls": "processor_calls",
+                "processors_calls": "processor_calls",
+                "retry_count": "retry",
+                "dummy_action_count": "dummy_action",
+                "autoreset_count": "autoreset",
+                "post_terminal_steps": "post_terminal_step",
+            }.get(field_name)
+            if operation_name is not None:
+                provenance = provenance_count(operation_name)
+        if provenance is not None:
+            value, source = provenance
+        else:
+            value, source = _adapter_counter(adapter, field_name, *aliases)
         if value is None:
             if field_name == "construction_reset_count":
                 value = int(bool(getattr(adapter, "_construction_reset_done", False)))
@@ -2613,6 +2813,11 @@ def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step:
             raise ProtocolError(f"protocol counter {field_name} is negative")
         values[field_name] = value
         sources[field_name] = source
+    values["reset_provenance"] = copy.deepcopy(dict(reset_provenance)) if reset_provenance else None
+    values["post_construction_forbidden"] = copy.deepcopy(dict(post_forbidden)) if post_forbidden else {
+        name: {"allowed": False, "observed": True, "count": 0, "source": "unavailable"}
+        for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS
+    }
     values["actions_executed"] = int(observed.get("actions_executed", terminal_step))
     values["step_calls"] = int(observed.get("step_calls", values["actions_executed"]))
     values["render_calls"] = int(observed.get("render_calls", 0))
@@ -2818,6 +3023,12 @@ def execute_attempt(
         runtime_identity = _runtime_identity_audit(config, adapter=adapter) if strict else {}
         process_identity = _proc_start_identity(os.getpid())
         protocol = _protocol_counters(adapter, observed, int(terminal["step"]))
+        provenance_getter = getattr(adapter, "reset_provenance_snapshot", None)
+        reset_provenance = (
+            provenance_getter()
+            if callable(provenance_getter)
+            else copy.deepcopy(getattr(adapter, "reset_provenance", None))
+        )
         result = {
             "attempt_id": attempt.get("attempt_id"),
             "pair_id": attempt.get("pair_id"),
@@ -2839,6 +3050,7 @@ def execute_attempt(
             "windows": output_windows,
             "terminal": terminal,
             "protocol": protocol,
+            "reset_provenance": reset_provenance,
             "runtime": {
                 "python": sys.version.split()[0],
                 "python_executable": sys.executable,
@@ -3863,6 +4075,13 @@ def build_envelopes(
                             raise NullCalibrationError(
                                 f"{pair_id}/{window_id}/{horizon} {side} invariant roots are invalid: {exc}"
                             ) from exc
+                if _snapshot_contacts(lsnap[horizon]) != _snapshot_contacts(rsnap[horizon]):
+                    contact_identity_exact = False
+                    categorical = False
+                    raise NullCalibrationError(
+                        f"contact identity differs before numeric distance comparison at "
+                        f"{pair_id}/{window_id}/{horizon}"
+                    )
                 left_values = _selected_numeric_leaves(lsnap[horizon], roots)
                 right_values = _selected_numeric_leaves(rsnap[horizon], roots)
                 if set(left_values) != set(right_values):

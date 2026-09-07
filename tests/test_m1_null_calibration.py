@@ -285,6 +285,164 @@ def test_pair_validation_requires_distinct_processes_and_zero_forbidden_protocol
     assert any("restore" in reason for reason in invalid.reasons)
 
 
+def test_pair_validation_requires_exact_raw_terminal_reason_and_authoritative_evidence() -> None:
+    calibration = _module()
+    pair = {"pair_id": "m1n0-pair-000"}
+    left = _attempt_result(calibration, pair["pair_id"], "A", 11)
+    right = _attempt_result(calibration, pair["pair_id"], "B", 12)
+    raw_evidence = {
+        "source": "missing",
+        "field": None,
+        "raw_reason": None,
+        "returned_step": True,
+        "terminated": True,
+        "truncated": False,
+    }
+    for attempt in (left, right):
+        attempt["terminal"]["raw_termination_reason"] = None
+        attempt["terminal"]["raw_termination_evidence"] = deepcopy(raw_evidence)
+        attempt["terminal"]["official_evidence"] = deepcopy(raw_evidence)
+    assert calibration.validate_pair(pair, {"A": left, "B": right}, parent_pid=1).valid
+
+    changed_raw = deepcopy(right)
+    changed_raw["terminal"]["raw_termination_reason"] = "environment_termination"
+    changed_raw["terminal"]["raw_termination_evidence"]["raw_reason"] = "environment_termination"
+    invalid = calibration.validate_pair(pair, {"A": left, "B": changed_raw}, parent_pid=1)
+    assert invalid.valid is False
+    assert any("raw termination" in reason for reason in invalid.reasons)
+
+    changed_source = deepcopy(right)
+    changed_source["terminal"]["raw_termination_evidence"]["source"] = "step_info"
+    changed_source["terminal"]["official_evidence"]["source"] = "step_info"
+    invalid = calibration.validate_pair(pair, {"A": left, "B": changed_source}, parent_pid=1)
+    assert invalid.valid is False
+    assert any("authoritative" in reason or "evidence" in reason for reason in invalid.reasons)
+
+
+def test_snapshot_contacts_preserves_duplicate_topology_and_canonicalizes_distance_order() -> None:
+    calibration = _module()
+    left = {
+        "invariants": {
+            "contacts": [
+                ("geom_b", "geom_a", -0.1),
+                ("geom_a", "geom_b", -0.2),
+                ("geom_c", "geom_a", -0.3),
+            ]
+        }
+    }
+    right = {
+        "invariants": {
+            "contacts": [
+                ("geom_a", "geom_c", -0.3),
+                ("geom_a", "geom_b", -0.2),
+                ("geom_b", "geom_a", -0.1),
+            ]
+        }
+    }
+    assert calibration._snapshot_contacts(left) == (
+        ("geom_a", "geom_b"),
+        ("geom_a", "geom_b"),
+        ("geom_a", "geom_c"),
+    )
+    assert calibration._snapshot_contacts(left) == calibration._snapshot_contacts(right)
+    assert calibration._contact_distance_leaves(left["invariants"]["contacts"]) == calibration._contact_distance_leaves(
+        right["invariants"]["contacts"]
+    )
+
+
+def test_pair_validation_rejects_contact_distance_when_contact_identity_multiset_differs() -> None:
+    calibration = _module()
+    pair = {"pair_id": "m1n0-pair-000"}
+    left = _attempt_result(calibration, pair["pair_id"], "A", 11)
+    right = _attempt_result(calibration, pair["pair_id"], "B", 12)
+    left["windows"]["free_motion"]["snapshots"]["0"]["invariants"]["contacts"] = [
+        ("robot_finger", "target_geom", -0.1),
+        ("robot_finger", "target_geom", -0.2),
+    ]
+    right["windows"]["free_motion"]["snapshots"]["0"]["invariants"]["contacts"] = [
+        ("robot_finger", "target_geom", -0.1),
+    ]
+    invalid = calibration.validate_pair(pair, {"A": left, "B": right}, parent_pid=1)
+    assert invalid.valid is False
+    assert invalid.discrete["contact_identity_exact"] is False
+
+
+def test_protocol_counters_publish_runtime_reset_provenance_and_post_construction_zeroes() -> None:
+    calibration = _module()
+
+    class Adapter:
+        reset_provenance = {
+            "construction": {
+                "operations": {
+                    "reset": {"allowed": True, "observed": True, "count": 1},
+                    "set_init_state": {"allowed": True, "observed": True, "count": 1},
+                    "settle": {"allowed": True, "observed": True, "count": 10},
+                },
+                "post_construction_forbidden": {
+                    "reset": {"allowed": False, "observed": True, "count": 0},
+                    "set_init_state": {"allowed": False, "observed": True, "count": 0},
+                    "settle": {"allowed": False, "observed": True, "count": 0},
+                },
+            }
+        }
+        post_construction_operation_counts = {
+            "reset": 0,
+            "set_init_state": 0,
+            "settle": 0,
+            "restore": 0,
+            "capture": 0,
+            "policy_calls": 0,
+            "processor_calls": 0,
+            "retry": 0,
+            "post_terminal_step": 0,
+            "dummy_action": 0,
+            "autoreset": 0,
+        }
+
+    counters = calibration._protocol_counters(
+        Adapter(),
+        {
+            "actions_executed": 82,
+            "step_calls": 82,
+            "render_calls": 82,
+            "invariant_collections": 82,
+            "post_terminal_steps": 0,
+        },
+        82,
+    )
+    assert counters["construction_reset_count"] == 1
+    assert counters["set_init_state_count"] == 0
+    assert counters["settle_count"] == 0
+    assert counters["post_construction_forbidden"]["reset"]["count"] == 0
+    assert counters["reset_provenance"]["construction"]["operations"]["settle"]["count"] == 10
+
+
+def test_pair_validation_rejects_post_construction_reset_provenance_even_if_flat_count_is_zero() -> None:
+    calibration = _module()
+    pair = {"pair_id": "m1n0-pair-000"}
+    left = _attempt_result(calibration, pair["pair_id"], "A", 11)
+    right = _attempt_result(calibration, pair["pair_id"], "B", 12)
+    for attempt in (left, right):
+        attempt["reset_provenance"] = {
+            "construction": {
+                "phase": "construction",
+                "operations": {
+                    "reset": {"allowed": True, "observed": True, "count": 1},
+                    "set_init_state": {"allowed": True, "observed": True, "count": 0},
+                    "settle": {"allowed": True, "observed": True, "count": 0},
+                },
+                "post_construction_forbidden": {
+                    name: {"allowed": False, "observed": True, "count": 0}
+                    for name in calibration.POST_CONSTRUCTION_FORBIDDEN_OPERATIONS
+                },
+            }
+        }
+    right["reset_provenance"]["construction"]["post_construction_forbidden"]["reset"]["count"] = 1
+    invalid = calibration.validate_pair(pair, {"A": left, "B": right}, parent_pid=1)
+    assert invalid.valid is False
+    assert any("post-construction" in reason or "reset provenance" in reason for reason in invalid.reasons)
+
+
 def test_protocol_counter_publication_includes_every_forbidden_operation() -> None:
     calibration = _module()
 

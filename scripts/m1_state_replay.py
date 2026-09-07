@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import argparse
 import copy
+from functools import wraps
 import hashlib
 import inspect
 import json
@@ -61,6 +62,9 @@ FLOATING_ATOL = 1.0e-12
 INTEGRATION_SPEC_NAME = "mjSTATE_INTEGRATION"
 POST_PROCESS_ALLOWLIST = frozenset(("vis_site_names", "model.site_rgba"))
 POST_CONSTRUCTION_FORBIDDEN_OPERATIONS = (
+    "reset",
+    "set_init_state",
+    "settle",
     "restore",
     "capture",
     "policy_calls",
@@ -4462,6 +4466,18 @@ def _audit_runtime_owners(inner: Any, env: Any) -> dict[str, Any]:
             allowed_names = frozenset()
         for field_name, field_value in fields.items():
             field_path = f"{path}.{field_name}"
+            if callable(field_value) and getattr(field_value, "_m1_operation_probe", False):
+                classification[field_path] = IMMUTABLE
+                field_evidence[field_path] = {
+                    "class": IMMUTABLE,
+                    "type": type(field_value).__name__,
+                    "mutable_value": False,
+                    "operation_probe": True,
+                    "source_evidence": "RuntimeAdapter construction/post-construction operation probe",
+                    **_state_behavior_evidence(IMMUTABLE, owner_kind, str(field_name)),
+                }
+                handles[field_path] = "immutable_handle"
+                continue
             # Bound methods/callable hooks are behavior handles, not mutable
             # runtime state.  They still appear in ``vars`` when a test or
             # wrapper monkeypatches a hook (for example ``_post_process``),
@@ -5597,6 +5613,8 @@ class RuntimeAdapter:
         self.post_construction_operation_counts: dict[str, int] = {
             name: 0 for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS
         }
+        self._post_construction_counter_baseline: dict[str, int | None] = {}
+        self._operation_probe: dict[str, Any] | None = None
         self.state_classification = validate_state_classification(DEFAULT_STATE_CLASSIFICATION)
         self.runtime_audit: dict[str, Any] = {}
         configured_allowlist = self.config.get("post_process_guard", {}).get("allowlist") if isinstance(
@@ -6095,8 +6113,9 @@ class RuntimeAdapter:
             selected_pre_reset = int(getattr(selected_env, "init_state_id", requested_init_state))
             construction_counter_before = {
                 name: cls._read_construction_counter(selected_env, name)
-                for name in ("set_init_state_calls", "settle_calls")
+                for name in ("reset_calls", "set_init_state_calls", "settle_calls")
             }
+            operation_probe = cls._install_operation_probes(selected_env)
             reset_result = cls._construction_reset_target(selected_env, config)
             adapter = cls(
                 runtime,
@@ -6106,6 +6125,9 @@ class RuntimeAdapter:
                 selected_env=selected_env,
             )
             adapter._construction_reset_done = True
+            operation_probe["adapter"] = adapter
+            operation_probe["phase"] = "post_construction"
+            adapter._operation_probe = operation_probe
             observed_post_cursor = getattr(selected_env, "init_state_id", None)
             expected_post_cursor = selected_pre_reset + 1
             if observed_post_cursor is not None:
@@ -6143,7 +6165,13 @@ class RuntimeAdapter:
                     reset_result=reset_result,
                     counter_before=construction_counter_before,
                     post_construction_counts=adapter.post_construction_operation_counts,
+                    construction_operation_counts=operation_probe["construction_counts"],
+                    operation_probe=operation_probe,
                 ),
+            }
+            adapter._post_construction_counter_baseline = {
+                name: cls._read_construction_counter(selected_env, name)
+                for name in ("reset_calls", "set_init_state_calls", "settle_calls")
             }
             adapter._runtime_audit()
             return adapter
@@ -6177,6 +6205,64 @@ class RuntimeAdapter:
             return None
         return integer if integer >= 0 else None
 
+    @staticmethod
+    def _operation_probe_targets(target: Any) -> tuple[Any, ...]:
+        """Return the selected wrapper and its official nested env owners."""
+
+        result: list[Any] = []
+        pending = [target]
+        seen: set[int] = set()
+        while pending and len(result) < 8:
+            owner = pending.pop(0)
+            if owner is None or id(owner) in seen:
+                continue
+            seen.add(id(owner))
+            result.append(owner)
+            for name in ("_env", "env", "unwrapped", "inner"):
+                child = getattr(owner, name, None)
+                if child is not None and not callable(child):
+                    pending.append(child)
+        return tuple(result)
+
+    @classmethod
+    def _install_operation_probes(cls, target: Any) -> dict[str, Any]:
+        """Trace reset/init/settle calls across the official wrapper chain."""
+
+        holder: dict[str, Any] = {
+            "phase": "construction",
+            "construction_counts": {name: 0 for name in ("reset", "set_init_state", "settle")},
+            "installed": [],
+        }
+
+        def observe(name: str) -> None:
+            if holder["phase"] == "construction":
+                holder["construction_counts"][name] += 1
+                return
+            adapter = holder.get("adapter")
+            if adapter is not None:
+                adapter._record_post_construction_operation(name)
+
+        for owner in cls._operation_probe_targets(target):
+            for name in ("reset", "set_init_state", "settle"):
+                original = getattr(owner, name, None)
+                if not callable(original):
+                    continue
+
+                @wraps(original)
+                def wrapped(*args: Any, _name: str = name, _original: Any = original, **kwargs: Any) -> Any:
+                    observe(_name)
+                    return _original(*args, **kwargs)
+
+                setattr(wrapped, "_m1_operation_probe", True)
+                try:
+                    setattr(owner, name, wrapped)
+                except (AttributeError, TypeError):
+                    continue
+                holder["installed"].append(
+                    {"owner": type(owner).__name__, "operation": name}
+                )
+        return holder
+
     @classmethod
     def _construction_operation_evidence(
         cls,
@@ -6209,6 +6295,8 @@ class RuntimeAdapter:
         reset_result: Any,
         counter_before: Mapping[str, int | None],
         post_construction_counts: Mapping[str, Any],
+        construction_operation_counts: Mapping[str, Any] | None = None,
+        operation_probe: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         forbidden: dict[str, dict[str, Any]] = {}
         for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS:
@@ -6224,28 +6312,57 @@ class RuntimeAdapter:
                 "count": int(value) if observed else None,
                 "source": "RuntimeAdapter.post_construction_operation_counts",
             }
+        probe_counts = construction_operation_counts or {}
+
+        def construction_evidence(name: str, counter_name: str) -> dict[str, Any]:
+            probe_value = probe_counts.get(name)
+            if isinstance(probe_value, (int, np.integer)) and not isinstance(probe_value, (bool, np.bool_)):
+                return {
+                    "allowed": True,
+                    "observed": True,
+                    "count": int(probe_value),
+                    "source": f"RuntimeAdapter.construct_fresh.operation_probe.{name}",
+                }
+            return cls._construction_operation_evidence(
+                target,
+                counter_name,
+                before=counter_before.get(counter_name),
+                allowed=True,
+            )
+
+        reset_evidence = construction_evidence("reset", "reset_calls")
+        # The adapter invoked exactly one seeded reset even when a minimal
+        # official wrapper does not expose a public reset counter.  The call
+        # site itself is authoritative in that case; later post-construction
+        # calls are still fail-closed unless a counter or adapter hook records
+        # them.
+        if reset_evidence.get("count") is None:
+            reset_evidence = {
+                "allowed": True,
+                "observed": True,
+                "count": 1,
+                "source": "RuntimeAdapter.construct_fresh._construction_reset_target",
+            }
         return {
             "phase": "construction",
             "reset_result_type": type(reset_result).__name__,
-            "operations": {
-                "reset": {
-                    "allowed": True,
-                    "observed": True,
-                    "count": 1,
-                    "source": "RuntimeAdapter.construct_fresh._construction_reset_target",
+            "operation_probe": {
+                "source": "RuntimeAdapter.construct_fresh.operation_probe",
+                "installed": sorted(
+                    f"{item.get('owner')}:{item.get('operation')}"
+                    for item in (operation_probe or {}).get("installed", ())
+                    if isinstance(item, Mapping)
+                ),
+                "construction_counts": {
+                    str(name): int(value)
+                    for name, value in probe_counts.items()
+                    if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
                 },
-                "set_init_state": cls._construction_operation_evidence(
-                    target,
-                    "set_init_state_calls",
-                    before=counter_before.get("set_init_state_calls"),
-                    allowed=True,
-                ),
-                "settle": cls._construction_operation_evidence(
-                    target,
-                    "settle_calls",
-                    before=counter_before.get("settle_calls"),
-                    allowed=True,
-                ),
+            },
+            "operations": {
+                "reset": reset_evidence,
+                "set_init_state": construction_evidence("set_init_state", "set_init_state_calls"),
+                "settle": construction_evidence("settle", "settle_calls"),
             },
             "post_construction_forbidden": forbidden,
         }
@@ -6254,6 +6371,53 @@ class RuntimeAdapter:
         if name not in self.post_construction_operation_counts:
             raise M1RuntimeError(f"unknown post-construction operation: {name}")
         self.post_construction_operation_counts[name] += 1
+
+    def reset_provenance_snapshot(self) -> dict[str, Any]:
+        """Return construction evidence plus live post-construction deltas.
+
+        ``reset``/``set_init_state``/``settle`` are legitimate only during
+        official construction.  Their underlying runtime counters therefore
+        need a post-reset baseline; publishing the raw totals would falsely
+        classify construction work as forbidden activity.
+        """
+
+        provenance = copy.deepcopy(self.reset_provenance)
+        construction = provenance.get("construction") if isinstance(provenance, Mapping) else None
+        if not isinstance(construction, dict):
+            return provenance if isinstance(provenance, dict) else {}
+        forbidden = construction.get("post_construction_forbidden")
+        if not isinstance(forbidden, dict):
+            forbidden = {}
+            construction["post_construction_forbidden"] = forbidden
+        counter_names = {
+            "reset": "reset_calls",
+            "set_init_state": "set_init_state_calls",
+            "settle": "settle_calls",
+        }
+        for name in POST_CONSTRUCTION_FORBIDDEN_OPERATIONS:
+            tracked = self.post_construction_operation_counts.get(name, 0)
+            count: int | None = int(tracked) if isinstance(tracked, (int, np.integer)) else None
+            source = "RuntimeAdapter.post_construction_operation_counts"
+            counter_name = counter_names.get(name)
+            baseline = self._post_construction_counter_baseline.get(counter_name) if counter_name else None
+            if counter_name is not None:
+                current = self._read_construction_counter(self.env, counter_name)
+                if baseline is not None and current is not None and current >= baseline:
+                    delta = int(current - baseline)
+                    count = max(int(count or 0), delta)
+                    source = f"{type(self.env).__name__}.{counter_name}-post_construction_baseline"
+                elif count is None:
+                    count = 0
+            if count is None or count < 0:
+                count = 0
+            forbidden[name] = {
+                "allowed": False,
+                "observed": True,
+                "count": int(count),
+                "source": source,
+            }
+        construction["phase"] = "construction"
+        return provenance
 
     @staticmethod
     def _construction_reset_target(target: Any, config: Mapping[str, Any]) -> Any:
