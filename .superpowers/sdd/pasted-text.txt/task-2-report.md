@@ -83,6 +83,8 @@ The follow-up scope is limited to `scripts/m1_null_calibration.py`,
 and existing run directories were not staged.  `py_compile`, YAML/config
 self-hash, registry self-hash, and `git diff --check` pass.  No authoritative
 prepare, renderer calibration, or 40-attempt runtime was run.
+The follow-up implementation is committed as
+`c0cc431669046054cd506e0a5a658fc846a08996`.
 
 The remaining empirical concern is intentionally unchanged: M1-N0 still needs
 the separately scheduled live duplicate-control calibration before its physics
