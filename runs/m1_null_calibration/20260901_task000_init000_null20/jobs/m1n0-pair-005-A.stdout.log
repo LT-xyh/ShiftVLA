@@ -1,0 +1,6 @@
+[info] using task orders [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+Creating LIBERO envs | suites=['libero_spatial'] | n_envs(per task)=1 | init_states=True
+Restricting to task_ids=[0]
+[info] using task orders [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+Built vec env | suite=libero_spatial | task_id=0 | n_envs=1
+M1N0_RESULT /public/home/xuyinghao/workspace/vla/ShiftVLA/runs/m1_null_calibration/20260901_task000_init000_null20/jobs/m1n0-pair-005-A.result.json

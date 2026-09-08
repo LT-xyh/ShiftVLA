@@ -1,0 +1,19 @@
+[robosuite WARNING] No private macro file found! (__init__.py:7)
+[robosuite WARNING] It is recommended to use a private macro file (__init__.py:8)
+[robosuite WARNING] To setup, run: python /public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/scripts/setup_macros.py (__init__.py:9)
+WARNING:matplotlib:/public/home/xuyinghao/.config/matplotlib is not a writable directory
+WARNING:matplotlib:Matplotlib created a temporary cache directory at /public/home/xuyinghao/tmp/matplotlib-87lgpofo because there was an issue with the default path ({configdir}); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+Exception ignored in: <function EGLGLContext.__del__ at 0x14d209269120>
+Traceback (most recent call last):
+  File "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/renderers/context/egl_context.py", line 155, in __del__
+    self.free()
+  File "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/renderers/context/egl_context.py", line 146, in free
+    if self._context:
+       ^^^^^^^^^^^^^
+AttributeError: 'EGLGLContext' object has no attribute '_context'
+Exception ignored in: <function MjRenderContext.__del__ at 0x14d209269260>
+Traceback (most recent call last):
+  File "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/utils/binding_utils.py", line 198, in __del__
+    self.con.free()
+    ^^^^^^^^
+AttributeError: 'MjRenderContextOffscreen' object has no attribute 'con'
