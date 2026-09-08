@@ -1,0 +1,167 @@
+schema_version: 1
+name: m1_n0_r1_renderer_preflight
+config_sha256: 66a52d8f6d9b2cdbd1476962c8f701d10071b79bd96c62f5ad1f93555568ecf5
+evidence_role: infrastructure_admission_only
+included_in_null_calibration_evidence: false
+
+# These are deliberately separate namespaces.  The sentinel is never a Torch
+# device and the EGL ordinal is not a physical accelerator identifier.
+policy_compute_device: not_applicable_no_policy
+physical_compute_device_id: null
+renderer_backend: egl
+renderer_device_id: "0"
+renderer_identity:
+  vendor: Mesa/X.org
+  renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+  version: 3.1 Mesa 21.1.5
+
+# Provenance bindings only.  This admission does not seed/reset/restore/settle.
+task_binding:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+obs_type: pixels_agent_pos
+
+runtime:
+  python_executable: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+  runtime_lock:
+    path: runtime/locks/shiftvla-libero-runtime.txt
+    sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
+  libero_config_tree:
+    root: runtime/m1/libero_config
+    entries:
+      - path: runtime/m1/libero_config/config.yaml
+        type: file
+        size: 502
+        sha256: 3794964a45a33c0d545118d3c44064bae497931eadd14cb26974008cdd3b55af
+  source_checkouts:
+    libero:
+      path: external/hf-libero
+      git_sha: 8561c60eea2fb93096146f240194649df73d8b1e
+    lerobot:
+      path: external/lerobot
+      git_sha: 7e241bd630a3719a56157a497ce5d08f244784f1
+    robosuite:
+      path: external/robosuite
+      git_sha: fbee5844ff5632f5b5698e204ec5357ca50be0df
+    mujoco:
+      path: external/mujoco
+      git_sha: 72cb2b210da666617924de709406d6aadbe60c71
+  source_files:
+    dcu_preflight:
+      path: scripts/dcu_preflight.py
+      sha256: af2e67fe9cca570694cc5ff84c49cbefffe722cda114f6867792541366731453
+    m1_state_replay:
+      path: scripts/m1_state_replay.py
+      sha256: 9f3378937f605d7e6216236536f3e7ff038b156ac641044c2623ce9418e0888a
+    libero_env_wrapper:
+      path: external/hf-libero/libero/libero/envs/env_wrapper.py
+      sha256: a782fb76c9792268d28979474fe72849e1e98ada49c8e997a65359a8d6b6acd0
+    lerobot_libero:
+      path: external/lerobot/src/lerobot/envs/libero.py
+      sha256: 97c984f12331527626812ec19967ef399e545535b3571becf044db2417ae9d71
+    robosuite_base:
+      path: external/robosuite/robosuite/environments/base.py
+      sha256: 16a044bf28cd39623c286d72f8be2f3789d53e215d77bef3b88ca33511c87687
+
+predecessor:
+  manifest_path: runtime/m1/m1_n0_r1_predecessor_manifest.json
+  manifest_raw_sha256: 78600cca98b8f47772a877f274cff2756d4988391c143df74f7d1d4c37b9c955
+  manifest_self_sha256: fa58297e87d4b3b283441052a5fc4704c2335bb35a82fa17cdaf8a5b5739f5a1
+  preserved_output_root: runs/m1_null_calibration/20260901_task000_init000_null20
+
+paths:
+  admission_root: /public/home/xuyinghao/workspace/vla/ShiftVLA/runs/m1_renderer_preflight/20260908_task000_init000_egl0
+  authoritative_null_root: /public/home/xuyinghao/workspace/vla/ShiftVLA/runs/m1_null_calibration/20260908_task000_init000_null20_egl0
+
+governed_environment:
+  unset_before_import:
+    - CUDA_VISIBLE_DEVICES
+    - HIP_VISIBLE_DEVICES
+    - ROCR_VISIBLE_DEVICES
+    - GPU_DEVICE_ORDINAL
+    - NVIDIA_VISIBLE_DEVICES
+    - MUJOCO_GL
+    - PYOPENGL_PLATFORM
+    - MUJOCO_EGL_DEVICE_ID
+    - EGL_PLATFORM
+    - __EGL_VENDOR_LIBRARY_FILENAMES
+    - __EGL_VENDOR_LIBRARY_DIRS
+    - __GLX_VENDOR_LIBRARY_NAME
+    - LIBGL_ALWAYS_INDIRECT
+    - LIBGL_ALWAYS_SOFTWARE
+    - LIBGL_DRIVERS_PATH
+    - MESA_LOADER_DRIVER_OVERRIDE
+    - GALLIUM_DRIVER
+    - DRI_PRIME
+    - MESA_VK_DEVICE_SELECT
+    - VK_ICD_FILENAMES
+  blocked_nonempty: [LD_PRELOAD, LD_AUDIT]
+  admitted_ld_library_path: /opt/hyhal/lib/rocprofiler:/opt/hyhal/lib/criu/:/opt/hyhal/lib:/opt/dtk-25.04.2/dcc/gcvm/lib:/opt/dtk-25.04.2/hip/lib:/opt/dtk-25.04.2/llvm/lib:/opt/dtk-25.04.2/lib:/opt/dtk-25.04.2/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk-25.04.2/opencl/lib:/opt/hyhal/lib/rocprofiler:/opt/hyhal/lib/criu/:/opt/hyhal/lib:/opt/dtk-25.04.2/dcc/gcvm/lib:/opt/dtk-25.04.2/hip/lib:/opt/dtk-25.04.2/llvm/lib:/opt/dtk-25.04.2/lib:/opt/dtk-25.04.2/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk-25.04.2/opencl/lib
+  set_cache:
+    LIBERO_CONFIG_PATH: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config
+    HF_HOME: /public/home/xuyinghao/tmp/shiftvla-empty-hf-home-g
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+  set_renderer:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "0"
+
+operations:
+  allowed:
+    - official_policy_free_libero_factory_construction
+    - unavoidable_inner_reset_during_construction
+    - one_public_render
+    - render_return_metadata_only
+    - close_destroy_and_exit
+  forbidden:
+    - public_reset
+    - env_step
+    - create_or_send_actions
+    - ten_step_settle
+    - runtime_adapter_construction
+    - null_measurement
+    - replay_capture_or_restore
+    - policy_processor_or_inference
+    - success_reward_done_or_predicate_inspection
+    - frame_serialization_or_hashing
+    - retry_replacement_autoreset_or_process_reuse
+  forbidden_dispatch:
+    - prepare_run
+    - materialize_authoritative_config
+  authoritative_schedule_creation: false
+
+pass_contract:
+  construction_status: PASS
+  public_render_calls: 1
+  render_returned: true
+  forbidden_operation_count: 0
+  close_status: PASS
+  destroy_environment: true
+  exit_process: true
+  failure_status: BLOCKED
+
+publication:
+  atomic: true
+  no_overwrite: true
+  child_timeout_seconds: 600
+  persist_rgb_frame: false
+  artifact_allowlist:
+    - probe-000.json
+    - probe-000.stdout.log
+    - probe-000.stderr.log
+    - probe-001.json
+    - probe-001.stdout.log
+    - probe-001.stderr.log
+    - probe-002.json
+    - probe-002.stdout.log
+    - probe-002.stderr.log
+    - preflight.json
+    - preflight.stdout.log
+    - preflight.stderr.log
+    - terminal_manifest.json

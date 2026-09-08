@@ -467,6 +467,135 @@ def _resolve_path(value: str | Path, *, base: Path = _ROOT) -> Path:
     return target if target.is_absolute() else base / target
 
 
+_R1_NAMESPACE = {
+    "policy_compute_device": "not_applicable_no_policy",
+    "physical_compute_device_id": None,
+    "renderer_backend": "egl",
+    "renderer_device_id": "0",
+}
+_R1_RENDERER = {
+    "MUJOCO_GL": "egl",
+    "PYOPENGL_PLATFORM": "egl",
+    "MUJOCO_EGL_DEVICE_ID": "0",
+    "expected_gl": {
+        "vendor": "Mesa/X.org",
+        "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+        "version": "3.1 Mesa 21.1.5",
+    },
+}
+
+
+def _validate_r1_merged_runtime(
+    validated_base: Mapping[str, Any], merged: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Require the merged config to equal the base plus the R1 allowlist."""
+
+    if not isinstance(validated_base, Mapping) or not isinstance(merged, Mapping):
+        raise ProvenanceError("R1 merged runtime inputs must be mappings")
+    if any(field_name in validated_base for field_name in _R1_NAMESPACE):
+        raise ProvenanceError("R1 namespace fields must be additions to the validated base")
+
+    expected = copy.deepcopy(dict(validated_base))
+    runtime_value = expected.get("runtime")
+    if not isinstance(runtime_value, Mapping):
+        raise ProvenanceError("validated base runtime must be a mapping")
+    runtime = copy.deepcopy(dict(runtime_value))
+    environment_value = runtime.get("environment")
+    renderer_value = runtime.get("renderer")
+    if not isinstance(environment_value, Mapping) or not isinstance(renderer_value, Mapping):
+        raise ProvenanceError("validated base runtime environment/renderer must be mappings")
+    environment = copy.deepcopy(dict(environment_value))
+    renderer = copy.deepcopy(dict(renderer_value))
+    for field_name in ("MUJOCO_GL", "PYOPENGL_PLATFORM", "MUJOCO_EGL_DEVICE_ID"):
+        environment[field_name] = _R1_RENDERER[field_name]
+    renderer.update(copy.deepcopy(_R1_RENDERER))
+    runtime["environment"] = environment
+    runtime["renderer"] = renderer
+    expected["runtime"] = runtime
+    expected.update(copy.deepcopy(_R1_NAMESPACE))
+    if not _exact_equal(merged, expected):
+        raise ProvenanceError("R1 merged config changed fields outside the renderer allowlist")
+    return copy.deepcopy(dict(merged))
+
+
+def _r1_runtime_config(
+    base: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Apply the admitted R1 renderer namespace to a validated base copy."""
+
+    from scripts import m1_state_replay
+
+    try:
+        validated = m1_state_replay.validate_config(base)
+    except Exception as exc:
+        raise ProvenanceError(f"base state replay runtime config is not valid: {exc}") from exc
+    if validated is not None and not isinstance(validated, Mapping):
+        raise ProvenanceError("state replay validator did not return a mapping or None")
+    validated_base = copy.deepcopy(base if validated is None else validated)
+
+    if not isinstance(overlay, Mapping):
+        raise ProvenanceError("R1 runtime overlay must be a mapping")
+    expected_overlay_fields = {*_R1_NAMESPACE, "runtime"}
+    if set(overlay) != expected_overlay_fields:
+        raise ProvenanceError("R1 runtime overlay contains missing or additional fields")
+    if overlay["policy_compute_device"] != _R1_NAMESPACE["policy_compute_device"]:
+        raise ProvenanceError("policy_compute_device must be not_applicable_no_policy")
+    if overlay["physical_compute_device_id"] != _R1_NAMESPACE["physical_compute_device_id"]:
+        raise ProvenanceError("physical_compute_device_id must be null")
+    if overlay["renderer_backend"] != _R1_NAMESPACE["renderer_backend"]:
+        raise ProvenanceError("renderer_backend must be egl")
+    if overlay["renderer_device_id"] != _R1_NAMESPACE["renderer_device_id"]:
+        raise ProvenanceError("renderer_device_id must be the admitted EGL ordinal 0")
+
+    overlay_runtime = overlay["runtime"]
+    if not isinstance(overlay_runtime, Mapping) or set(overlay_runtime) != {"renderer"}:
+        raise ProvenanceError("R1 runtime overlay may contain only runtime.renderer")
+    overlay_renderer = overlay_runtime["renderer"]
+    renderer_fields = set(_R1_RENDERER)
+    if not isinstance(overlay_renderer, Mapping) or set(overlay_renderer) != renderer_fields:
+        raise ProvenanceError("R1 runtime.renderer overlay fields are not exact")
+    if overlay_renderer["MUJOCO_GL"] != overlay["renderer_backend"]:
+        raise ProvenanceError("runtime.renderer.MUJOCO_GL differs from renderer_backend")
+    if overlay_renderer["PYOPENGL_PLATFORM"] != overlay["renderer_backend"]:
+        raise ProvenanceError("runtime.renderer.PYOPENGL_PLATFORM differs from renderer_backend")
+    if overlay_renderer["MUJOCO_EGL_DEVICE_ID"] != overlay["renderer_device_id"]:
+        raise ProvenanceError(
+            "runtime.renderer.MUJOCO_EGL_DEVICE_ID differs from renderer_device_id"
+        )
+    if not _exact_equal(overlay_renderer["expected_gl"], _R1_RENDERER["expected_gl"]):
+        raise ProvenanceError("runtime.renderer.expected_gl differs from the registered identity")
+
+    merged = copy.deepcopy(validated_base)
+    runtime = merged.get("runtime")
+    if not isinstance(runtime, dict):
+        raise ProvenanceError("validated base runtime must be a mapping")
+    environment = runtime.get("environment")
+    renderer = runtime.get("renderer")
+    if not isinstance(environment, dict) or not isinstance(renderer, dict):
+        raise ProvenanceError("validated base runtime environment/renderer must be mappings")
+    for field_name in ("MUJOCO_GL", "PYOPENGL_PLATFORM", "MUJOCO_EGL_DEVICE_ID"):
+        environment[field_name] = copy.deepcopy(overlay_renderer[field_name])
+    for field_name in renderer_fields:
+        renderer[field_name] = copy.deepcopy(overlay_renderer[field_name])
+    for field_name in (
+        "policy_compute_device",
+        "physical_compute_device_id",
+        "renderer_backend",
+        "renderer_device_id",
+    ):
+        merged[field_name] = copy.deepcopy(overlay[field_name])
+    return _validate_r1_merged_runtime(validated_base, merged)
+
+
+def _r1_merged_runtime_sha256(config: Mapping[str, Any]) -> str:
+    """Hash only the canonical merged runtime mapping."""
+
+    runtime = config.get("runtime")
+    if not isinstance(runtime, Mapping):
+        raise ProvenanceError("merged R1 config requires a runtime mapping")
+    return sha256_bytes(canonical_json(runtime).encode("utf-8"))
+
+
 def _official_runtime_config(config: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve the complete frozen state-replay construction configuration."""
 

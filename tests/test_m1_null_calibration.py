@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 from copy import deepcopy
 import hashlib
 import json
@@ -1397,3 +1398,281 @@ def test_renderer_envelope_uses_configured_camera_and_observation_key() -> None:
                 "invariants": {"required_roots": list(calibration.STRICT_INVARIANT_ROOTS)},
             },
         )
+
+
+def _r1_base_config(state_replay: Any) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "name": "state_replay",
+        "runtime": {
+            "environment": copy.deepcopy(state_replay.FROZEN_RUNTIME_ENVIRONMENT),
+            "renderer": {
+                "MUJOCO_GL": "egl",
+                "PYOPENGL_PLATFORM": "egl",
+                "MUJOCO_EGL_DEVICE_ID": "8",
+                "expected_gl": {
+                    "vendor": "Mesa/X.org",
+                    "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+                    "version": "3.1 Mesa 21.1.5",
+                },
+            },
+        },
+    }
+
+
+def _r1_overlay() -> dict[str, Any]:
+    return {
+        "policy_compute_device": "not_applicable_no_policy",
+        "physical_compute_device_id": None,
+        "renderer_backend": "egl",
+        "renderer_device_id": "0",
+        "runtime": {
+            "renderer": {
+                "MUJOCO_GL": "egl",
+                "PYOPENGL_PLATFORM": "egl",
+                "MUJOCO_EGL_DEVICE_ID": "0",
+                "expected_gl": {
+                    "vendor": "Mesa/X.org",
+                    "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+                    "version": "3.1 Mesa 21.1.5",
+                },
+            }
+        },
+    }
+
+
+def test_r1_runtime_config_validates_unchanged_base_then_applies_only_renderer_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    validated: list[dict[str, object]] = []
+
+    def fake_validate(value: dict[str, object]) -> dict[str, object]:
+        validated.append(value)
+        return value
+
+    monkeypatch.setattr(state_replay, "validate_config", fake_validate)
+    overlay = _r1_overlay()
+    merged = calibration._r1_runtime_config(base, overlay)
+    assert validated == [base]
+    assert base["runtime"]["renderer"]["MUJOCO_EGL_DEVICE_ID"] == "8"
+    assert merged["runtime"]["renderer"]["MUJOCO_EGL_DEVICE_ID"] == "0"
+    assert merged["runtime"]["environment"]["MUJOCO_EGL_DEVICE_ID"] == "0"
+    assert merged["policy_compute_device"] == "not_applicable_no_policy"
+    assert merged["physical_compute_device_id"] is None
+
+
+def test_r1_runtime_config_uses_non_none_validator_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    normalized = copy.deepcopy(base)
+    normalized["validated_marker"] = "returned_mapping"
+    monkeypatch.setattr(state_replay, "validate_config", lambda _value: normalized)
+    merged = calibration._r1_runtime_config(base, _r1_overlay())
+    assert merged["validated_marker"] == "returned_mapping"
+    assert "validated_marker" not in base
+
+
+def test_r1_runtime_config_uses_base_copy_when_validator_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    monkeypatch.setattr(state_replay, "validate_config", lambda _value: None)
+    merged = calibration._r1_runtime_config(base, _r1_overlay())
+    assert merged["name"] == base["name"]
+    assert merged is not base
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda overlay: overlay.update({"unexpected": True}), "overlay"),
+        (lambda overlay: overlay.update({"renderer_backend": "osmesa"}), "renderer_backend"),
+        (lambda overlay: overlay.update({"policy_compute_device": "cpu"}), "policy_compute_device"),
+        (lambda overlay: overlay.update({"physics": {"timestep": 0.01}}), "overlay"),
+        (
+            lambda overlay: overlay["runtime"].update({"controller_class": "changed"}),
+            "runtime",
+        ),
+    ],
+)
+def test_r1_runtime_config_rejects_non_renderer_overlay_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: Any,
+    message: str,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    monkeypatch.setattr(state_replay, "validate_config", lambda value: value)
+    overlay = _r1_overlay()
+    mutation(overlay)
+    with pytest.raises(calibration.ProvenanceError, match=message):
+        calibration._r1_runtime_config(base, overlay)
+
+
+def test_r1_runtime_config_rejects_renderer_fields_inconsistent_with_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    monkeypatch.setattr(state_replay, "validate_config", lambda value: value)
+    overlay = _r1_overlay()
+    overlay["runtime"]["renderer"]["MUJOCO_EGL_DEVICE_ID"] = "1"
+    with pytest.raises(calibration.ProvenanceError, match="renderer_device_id|MUJOCO_EGL_DEVICE_ID"):
+        calibration._r1_runtime_config(base, overlay)
+
+
+@pytest.mark.parametrize("field", ["vendor", "renderer", "version"])
+def test_r1_runtime_config_requires_exact_registered_gl_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    monkeypatch.setattr(state_replay, "validate_config", lambda value: value)
+    overlay = _r1_overlay()
+    overlay["runtime"]["renderer"]["expected_gl"][field] += " changed"
+    with pytest.raises(calibration.ProvenanceError, match="expected_gl"):
+        calibration._r1_runtime_config(base, overlay)
+
+
+def test_r1_runtime_config_does_not_mutate_base_overlay_or_frozen_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    overlay = _r1_overlay()
+    base_before = copy.deepcopy(base)
+    overlay_before = copy.deepcopy(overlay)
+    frozen_before = copy.deepcopy(state_replay.FROZEN_RUNTIME_ENVIRONMENT)
+    monkeypatch.setattr(state_replay, "validate_config", lambda value: value)
+    calibration._r1_runtime_config(base, overlay)
+    assert base == base_before
+    assert overlay == overlay_before
+    assert state_replay.FROZEN_RUNTIME_ENVIRONMENT == frozen_before
+
+
+def test_official_runtime_config_keeps_legacy_non_strict_behavior() -> None:
+    calibration = _module()
+    legacy = {"strict_runtime_contract": False, "runtime": {"include_policy": False}}
+    resolved = calibration._official_runtime_config(legacy)
+    assert resolved == legacy
+    assert resolved is not legacy
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda merged: merged.update({"task": {"task_id": 1}}),
+        lambda merged: merged.update({"physics": {"timestep": 0.01}}),
+        lambda merged: merged.update({"paths": {"cpu_python": "changed"}}),
+        lambda merged: merged.update({"pins": {"checkpoint": "changed"}}),
+        lambda merged: merged["runtime"].update({"offline": False}),
+        lambda merged: merged["runtime"].update({"controller_class": "changed"}),
+        lambda merged: merged["runtime"]["environment"].update({"HF_HOME": "changed"}),
+        lambda merged: merged["runtime"]["environment"].update({"EXTRA_CACHE": "changed"}),
+    ],
+)
+def test_r1_merged_runtime_validator_rejects_every_non_renderer_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: Any,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    monkeypatch.setattr(state_replay, "validate_config", lambda value: value)
+    merged = calibration._r1_runtime_config(base, _r1_overlay())
+    mutation(merged)
+    with pytest.raises(calibration.ProvenanceError, match="R1 merged|allowed"):
+        calibration._validate_r1_merged_runtime(base, merged)
+
+
+def _mapping_leaf_differences(left: Any, right: Any, prefix: str = "") -> set[str]:
+    if isinstance(left, dict) and isinstance(right, dict):
+        differences: set[str] = set()
+        for key in left.keys() | right.keys():
+            path = f"{prefix}.{key}" if prefix else key
+            if key not in left or key not in right:
+                differences.add(path)
+            else:
+                differences.update(_mapping_leaf_differences(left[key], right[key], path))
+        return differences
+    return set() if left == right else {prefix}
+
+
+def test_r1_runtime_config_real_frozen_base_has_exact_allowlisted_diff() -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = state_replay.load_config(ROOT / "configs/m1/state_replay.yaml")
+    assert base["paths"]["config_sha256"] == (
+        "730aff4a41fd91fb837102ca5f363a4a142bf7010140f5176940700f1d1fd5f0"
+    )
+    validated = state_replay.validate_config(base)
+    base_before = copy.deepcopy(base)
+    merged = calibration._r1_runtime_config(base, _r1_overlay())
+    calibration._validate_r1_merged_runtime(validated, merged)
+    assert base == base_before
+    assert _mapping_leaf_differences(validated, merged) == {
+        "policy_compute_device",
+        "physical_compute_device_id",
+        "renderer_backend",
+        "renderer_device_id",
+        "runtime.environment.MUJOCO_EGL_DEVICE_ID",
+        "runtime.renderer.MUJOCO_EGL_DEVICE_ID",
+    }
+
+
+def test_r1_runtime_config_does_not_apply_environment_or_construct_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _module()
+    import scripts.m1_state_replay as state_replay
+
+    base = _r1_base_config(state_replay)
+    monkeypatch.setattr(state_replay, "validate_config", lambda value: value)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("R1 pure overlay path dispatched a runtime side effect")
+
+    monkeypatch.setattr(state_replay, "_apply_runtime_environment", forbidden)
+    monkeypatch.setattr(state_replay, "build_official_runtime", forbidden)
+    monkeypatch.setattr(state_replay, "RuntimeAdapter", forbidden)
+    calibration._r1_runtime_config(base, _r1_overlay())
+
+
+def test_r1_merged_runtime_sha_is_stable_and_differs_from_legacy() -> None:
+    calibration = _module()
+    legacy = {
+        "runtime": {
+            "environment": {"MUJOCO_EGL_DEVICE_ID": "8"},
+            "renderer": {"MUJOCO_EGL_DEVICE_ID": "8"},
+        }
+    }
+    r1 = copy.deepcopy(legacy)
+    r1["runtime"]["environment"]["MUJOCO_EGL_DEVICE_ID"] = "0"
+    r1["runtime"]["renderer"]["MUJOCO_EGL_DEVICE_ID"] = "0"
+    assert calibration._r1_merged_runtime_sha256(r1) == calibration._r1_merged_runtime_sha256(copy.deepcopy(r1))
+    assert calibration._r1_merged_runtime_sha256(r1) != calibration._r1_merged_runtime_sha256(legacy)
+    non_renderer_drift = copy.deepcopy(r1)
+    non_renderer_drift["runtime"]["offline"] = False
+    assert calibration._r1_merged_runtime_sha256(non_renderer_drift) != calibration._r1_merged_runtime_sha256(r1)
