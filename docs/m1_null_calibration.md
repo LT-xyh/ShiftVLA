@@ -12,6 +12,9 @@ The checked-in configuration is
 action tape.  The registry and action-byte SHA-256 values are checked before
 preparation and again before workers are launched.  The output root is
 `runs/m1_null_calibration/20260901_task000_init000_null20`.
+The config freezes `worker_timeout_seconds: 600` for every child.  A timeout
+publishes partial stdout/stderr and a failed attempt record; it never retries
+or replaces that scheduled attempt.
 
 ## Protocol
 
@@ -106,6 +109,10 @@ scheduled attempt binding, and action-tape path/SHA binding.  Full invariant
 and official-observation arrays are published once as atomic, no-pickle,
 content-addressed `.npy` sidecars.  JSON registries and measurements retain
 references and hashes so the evidence can be independently reconstructed.
+The parent validates each A/B pair immediately and retains only compact scalar
+physics/RGB measurements plus artifact references in `pair_measurements.json`;
+full trajectories remain in the immutable attempt artifacts and are not
+accumulated in the parent schedule.
 
 The immutable output bundle contains the run specification, pair registry,
 one artifact per attempt, pair measurements, grouped physics and renderer

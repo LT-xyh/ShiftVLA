@@ -239,6 +239,9 @@ def test_prepare_is_source_only_and_preregisters_exactly_twenty_pairs(tmp_path: 
         f"m1n0-pair-{index:03d}" for index in range(20)
     ]
     assert all(len(item["attempts"]) == 2 for item in prepared.pair_registry["pairs"])
+    assert prepared.run_spec["worker_timeout_seconds"] == 600.0
+    request = calibration._prepare_attempt(prepared, prepared.pair_registry["pairs"][0], "A")
+    assert request["worker_timeout_seconds"] == 600.0
     assert payload["registry_sha256"] == prepared.run_spec["registry_sha256"]
 
 
@@ -266,6 +269,38 @@ def test_run_continues_frozen_schedule_after_failure_and_never_retries(tmp_path:
     assert result["counts"]["scheduled_attempts"] == 40
     assert result["counts"]["valid_pairs"] == 0
     assert result["status"] == "BLOCKED"
+
+
+def test_run_releases_full_attempt_trajectories_after_pair_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibration = _module()
+    prepared, _payload, _config, _tape = _prepared(calibration, tmp_path, monkeypatch)
+
+    def runner(attempt: dict[str, Any]) -> dict[str, Any]:
+        return _attempt_result(calibration, attempt["pair_id"], attempt["side"], 1000 + int(attempt["ordinal"]))
+
+    result = calibration.run_calibration(prepared, process_runner=runner)
+    assert len(result["attempts"]) == 40
+    assert all("windows" not in item for item in result["attempts"])
+    measurement_doc = calibration._load_document(result["pair_measurements_path"])
+    assert len(measurement_doc["measurement_records"]) == 20
+    assert all("windows" not in item for item in measurement_doc["measurement_records"])
+
+
+def test_strict_completed_worker_missing_output_sha_is_failed_not_synthesized() -> None:
+    calibration = _module()
+    request = {"attempt_id": "m1n0-pair-000-A", "pair_id": "m1n0-pair-000", "side": "A"}
+    result = {
+        "attempt_id": request["attempt_id"],
+        "pair_id": request["pair_id"],
+        "side": request["side"],
+        "status": "completed",
+    }
+    normalized = calibration._finalize_process_result(result, request, strict=True)
+    assert normalized["status"] == "failed"
+    assert "output_sha256" not in normalized
+    assert "output_sha256" in normalized["error"]
 
 
 def test_pair_validation_requires_distinct_processes_and_zero_forbidden_protocol_activity() -> None:
@@ -348,6 +383,23 @@ def test_snapshot_contacts_preserves_duplicate_topology_and_canonicalizes_distan
     assert calibration._contact_distance_leaves(left["invariants"]["contacts"]) == calibration._contact_distance_leaves(
         right["invariants"]["contacts"]
     )
+
+
+def test_contact_distance_leaves_include_canonical_identity_and_per_identity_occurrence() -> None:
+    calibration = _module()
+    values = [
+        ("geom_b", "geom_a", -0.1),
+        ("geom_a", "geom_b", -0.2),
+        ("geom_d", "geom_c", -0.3),
+    ]
+    leaves = calibration._contact_distance_leaves(values)
+    assert set(leaves) == {
+        'contacts[["geom_a","geom_b"]][0].distance',
+        'contacts[["geom_a","geom_b"]][1].distance',
+        'contacts[["geom_c","geom_d"]][0].distance',
+    }
+    assert leaves['contacts[["geom_a","geom_b"]][0].distance'].tolist() == [-0.2]
+    assert leaves['contacts[["geom_a","geom_b"]][1].distance'].tolist() == [-0.1]
 
 
 def test_pair_validation_rejects_contact_distance_when_contact_identity_multiset_differs() -> None:
@@ -535,6 +587,7 @@ def test_default_process_runner_reads_dedicated_result_when_stdout_has_runtime_l
         "side": "A",
         "output_root": str(tmp_path),
         "python": sys.executable,
+        "worker_timeout_seconds": 600,
     }
     worker_payload = {"status": "failed", "error": "preserved worker failure"}
 
@@ -555,6 +608,90 @@ def test_default_process_runner_reads_dedicated_result_when_stdout_has_runtime_l
     assert result["worker_transport"]["result"]["path"].endswith(".result.json")
     assert result["worker_transport"]["stdout"]["size"] > 0
     assert result["worker_transport"]["stderr"]["size"] > 0
+
+
+def test_default_process_runner_uses_real_worker_result_file_and_nonzero_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibration = _module()
+    prepared, _payload, _config, _tape = _prepared(calibration, tmp_path, monkeypatch)
+    pair = prepared.pair_registry["pairs"][0]
+    attempt = calibration._prepare_attempt(prepared, pair, "A")
+    result = calibration._default_process_runner(attempt)
+    assert result["status"] == "failed"
+    transport = result["worker_transport"]
+    assert transport["protocol"] == "dedicated_result_file_v1"
+    assert transport["returncode"] == 1
+    assert transport["timed_out"] is False
+    assert transport["result"]["exists"] is True
+    assert transport["result"]["sha256"]
+    stdout = Path(transport["stdout"]["path"]).read_text(encoding="utf-8")
+    assert "M1N0_RESULT " in stdout
+
+
+def test_default_process_runner_reconstructs_sidecar_result_with_nonzero_framed_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibration = _module()
+    attempt = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+        "output_root": str(tmp_path),
+        "python": sys.executable,
+        "worker_timeout_seconds": 600,
+    }
+    payload = {"status": "failed", "error": "framed worker error", "array": np.arange(6, dtype=np.float32)}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        result_path = Path(command[command.index("--result") + 1])
+        calibration.write_json_atomic(result_path, payload)
+        return subprocess.CompletedProcess(
+            command,
+            7,
+            stdout="worker diagnostic\nM1N0_RESULT sidecar\n",
+            stderr="worker stderr\n",
+        )
+
+    monkeypatch.setattr(calibration.subprocess, "run", fake_run)
+    result = calibration._default_process_runner(attempt)
+    assert result["status"] == "failed"
+    assert result["error"] == "framed worker error"
+    np.testing.assert_array_equal(result["array"], payload["array"])
+    assert result["worker_transport"]["returncode"] == 7
+    assert result["worker_transport"]["result"]["sha256"]
+    assert result["worker_transport"]["stdout"]["size"] > 0
+    assert result["worker_transport"]["stderr"]["size"] > 0
+
+
+def test_default_process_runner_timeout_persists_partial_logs_and_does_not_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calibration = _module()
+    attempt = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+        "output_root": str(tmp_path),
+        "python": sys.executable,
+        "worker_timeout_seconds": 600,
+    }
+    calls: list[float | None] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="partial stdout", stderr=b"partial stderr")
+
+    monkeypatch.setattr(calibration.subprocess, "run", fake_run)
+    result = calibration._default_process_runner(attempt)
+    assert calls == [600.0]
+    assert result["status"] == "failed"
+    assert "timed out" in result["error"]
+    transport = result["worker_transport"]
+    assert transport["timed_out"] is True
+    assert transport["timeout_seconds"] == 600.0
+    assert Path(transport["stdout"]["path"]).read_text(encoding="utf-8") == "partial stdout"
+    assert Path(transport["stderr"]["path"]).read_text(encoding="utf-8") == "partial stderr"
 
 
 def test_worker_executes_once_from_step_one_stops_at_terminal_and_never_restores() -> None:
@@ -905,6 +1042,76 @@ def test_grouped_envelopes_split_exact_semantics_from_floating_and_renderer_metr
     assert semantic["contact_identity_exact"] is True
 
 
+def test_grouped_envelopes_accept_parent_compact_measurements_without_attempt_windows() -> None:
+    calibration = _module()
+    discrete = {
+        name: True
+        for name in (
+            "categorical_gate",
+            "contact_identity_exact",
+            "predicate_exact",
+            "success_exact",
+            "done_termination_exact",
+            "terminal_timing_exact",
+            "gripper_exact",
+            "action_exact",
+            "observation_exact",
+        )
+    }
+    evidence = {
+        name: {"present": True, "source": "attempt_snapshots_and_frozen_actions"}
+        for name in ("contact", "grasp", "carried")
+    }
+    compact_results = []
+    for index in range(20):
+        pair_id = f"m1n0-pair-{index:03d}"
+        physics_samples = [
+            {
+                "pair_id": pair_id,
+                "trace_id": "trace",
+                "regime": regime,
+                "quantity": "qpos",
+                "horizon": 0,
+                "difference": 0.0,
+                "independent_evidence": evidence,
+            }
+            for regime in calibration.REGIME_NAMES
+        ]
+        renderer_samples = [
+            {
+                "pair_id": pair_id,
+                "trace_id": "trace",
+                "camera": "agentview",
+                "key": "render_rgb",
+                "regime": regime,
+                "horizon": 0,
+                "duplicate_controls": [
+                    np.asarray([0.0], dtype=np.float32),
+                    np.asarray([0.0], dtype=np.float32),
+                ],
+                "metrics": {"differing_pixel_count": 0, "max_abs": 0.0, "mean_abs": 0.0},
+            }
+            for regime in calibration.REGIME_NAMES
+        ]
+        compact_results.append(
+            calibration.PairValidation(
+                pair_id,
+                "trace",
+                True,
+                (),
+                {},
+                discrete,
+                {"physics_samples": physics_samples, "renderer_samples": renderer_samples},
+            )
+        )
+    envelopes = calibration.build_envelopes(
+        compact_results,
+        required_pair_ids=[f"m1n0-pair-{index:03d}" for index in range(20)],
+    )
+    assert envelopes.physics["coverage"]["n_pairs"] == 20
+    assert envelopes.renderer["coverage"]["n_pairs"] == 20
+
+
 def test_safe_artifact_creation_is_hash_checked_and_non_overwriting(tmp_path: Path) -> None:
     calibration = _module()
     target = tmp_path / "artifact.json"
@@ -1153,9 +1360,9 @@ def test_quantity_selection_keeps_contact_distances_as_floating_leaves() -> None
         }
     }
     values = calibration._selected_numeric_leaves(snapshot, ("contacts",))
-    assert set(values) == {"contacts[0].distance"}
-    assert values["contacts[0].distance"].dtype == np.dtype("float64")
-    assert values["contacts[0].distance"].tolist() == [-0.0125]
+    assert set(values) == {'contacts[["robot_finger","target_geom"]][0].distance'}
+    assert values['contacts[["robot_finger","target_geom"]][0].distance'].dtype == np.dtype("float64")
+    assert values['contacts[["robot_finger","target_geom"]][0].distance'].tolist() == [-0.0125]
 
 
 def test_renderer_envelope_uses_configured_camera_and_observation_key() -> None:

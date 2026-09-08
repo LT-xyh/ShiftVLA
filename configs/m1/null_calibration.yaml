@@ -1,6 +1,6 @@
 schema_version: 1
 name: m1_null_calibration
-config_sha256: c7937dbf0ffb7298282a1eff6263f3bff33d08a1f1dcaabae11e60224bd371bb
+config_sha256: abbda1ee7d347a3c6cafad9f6f79a41a4227b84d063f2eea8ae7d53c2c5fae2b
 strict_runtime_contract: true
 obs_type: pixels_agent_pos
 state_replay_config:
@@ -12,6 +12,7 @@ state_replay_config:
 # persisted source registry and action tape.
 pair_count: 20
 pair_prefix: m1n0-pair-
+worker_timeout_seconds: 600
 output_root: runs/m1_null_calibration/20260901_task000_init000_null20
 
 registry: runtime/m1/m1_hard_gate_tape_registry.json

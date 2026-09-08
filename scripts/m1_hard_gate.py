@@ -2084,11 +2084,34 @@ def build_renderer_envelopes(
             controls = [sample["duplicate_control_a"], sample["duplicate_control_b"]]
         if controls is None:
             raise RendererCalibrationError("renderer sample requires duplicate_controls")
-        left = sample.get("rgb_a", sample.get("expected"))
-        right = sample.get("rgb_b", sample.get("actual"))
-        if left is None or right is None:
-            left, right = controls[0], controls[1]
-        metrics = rgb_disagreement_metrics(left, right)
+        compact_metrics = sample.get("metrics")
+        if compact_metrics is not None:
+            metrics_mapping = _mapping(compact_metrics, "renderer metrics", RendererCalibrationError)
+            try:
+                differing_pixel_count = int(metrics_mapping["differing_pixel_count"])
+                max_abs = float(metrics_mapping["max_abs"])
+                mean_abs = float(metrics_mapping["mean_abs"])
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise RendererCalibrationError("renderer metrics are incomplete") from exc
+            if (
+                differing_pixel_count < 0
+                or not math.isfinite(max_abs)
+                or max_abs < 0
+                or not math.isfinite(mean_abs)
+                or mean_abs < 0
+            ):
+                raise RendererCalibrationError("renderer metrics must be finite and nonnegative")
+            metrics = {
+                "differing_pixel_count": differing_pixel_count,
+                "max_abs": max_abs,
+                "mean_abs": mean_abs,
+            }
+        else:
+            left = sample.get("rgb_a", sample.get("expected"))
+            right = sample.get("rgb_b", sample.get("actual"))
+            if left is None or right is None:
+                left, right = controls[0], controls[1]
+            metrics = rgb_disagreement_metrics(left, right)
         controls_identical = _controls_bitwise_identical(controls)
         grouped.setdefault((camera, key, regime, horizon), []).append((metrics, controls_identical))
     if not grouped:

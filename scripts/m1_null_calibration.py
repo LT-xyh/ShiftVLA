@@ -57,6 +57,7 @@ REGIME_NAMES: tuple[str, ...] = (
 DEFAULT_QUANTITY_ROOTS = ("qpos", "qvel", "objects", "gripper_physical")
 DEFAULT_CAMERA = "agentview"
 DEFAULT_RENDER_KEY = "render_rgb"
+DEFAULT_WORKER_TIMEOUT_SECONDS = 600.0
 # These are the names emitted by the pinned LeRobot LIBERO adapter after its
 # official camera-name mapping.  The path is retained in evidence, while the
 # camera group is resolved from the leaf rather than guessed from a requested
@@ -615,6 +616,15 @@ def _validate_strict_null_config(config: Mapping[str, Any], runtime_config: Mapp
         )
     if not isinstance(renderer.get("observation_key"), str) or not renderer["observation_key"].strip():
         raise ProvenanceError("strict null config renderer.observation_key is required")
+    timeout = config.get("worker_timeout_seconds")
+    if isinstance(timeout, bool):
+        raise ProvenanceError("strict null config worker_timeout_seconds must be positive")
+    try:
+        timeout_value = float(timeout)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProvenanceError("strict null config worker_timeout_seconds must be positive") from exc
+    if not math.isfinite(timeout_value) or timeout_value <= 0:
+        raise ProvenanceError("strict null config worker_timeout_seconds must be positive")
     configured_runtime = config.get("runtime")
     frozen_runtime = runtime_config.get("runtime")
     if not isinstance(configured_runtime, Mapping) or not isinstance(frozen_runtime, Mapping):
@@ -941,6 +951,10 @@ class PairValidation:
     reasons: tuple[str, ...] = ()
     attempts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict, repr=False)
     discrete: Mapping[str, Any] = field(default_factory=dict)
+    # Populated by the parent only after A/B validation.  It contains scalar
+    # physics deltas and renderer disagreement metrics, never trajectory
+    # snapshots or RGB arrays.
+    measurements: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -949,6 +963,14 @@ class PairValidation:
             "valid": self.valid,
             "reasons": list(self.reasons),
             "discrete": dict(self.discrete),
+            "measurement_summary": {
+                "physics_samples": len(self.measurements.get("physics_samples", ()))
+                if isinstance(self.measurements, Mapping)
+                else 0,
+                "renderer_samples": len(self.measurements.get("renderer_samples", ()))
+                if isinstance(self.measurements, Mapping)
+                else 0,
+            },
         }
 
 
@@ -1522,7 +1544,8 @@ def _contact_distance_leaves(value: Any, path: str = "contacts") -> dict[str, np
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return {}
     result: dict[str, np.ndarray] = {}
-    for index, (_identity, distance) in enumerate(_canonical_contact_entries(value)):
+    occurrence_by_identity: dict[tuple[str, str], int] = {}
+    for identity, distance in _canonical_contact_entries(value):
         if distance is None or isinstance(distance, (bool, np.bool_)):
             continue
         try:
@@ -1531,7 +1554,14 @@ def _contact_distance_leaves(value: Any, path: str = "contacts") -> dict[str, np
             continue
         if numeric.shape != () or not np.all(np.isfinite(numeric)):
             continue
-        result[f"{path}[{index}].distance"] = np.asarray([float(numeric)], dtype=np.float64)
+        occurrence = occurrence_by_identity.get(identity, 0)
+        occurrence_by_identity[identity] = occurrence + 1
+        # JSON encoding makes the pair boundary unambiguous even when a
+        # geometry name contains punctuation used by this diagnostic path.
+        identity_token = json.dumps(list(identity), ensure_ascii=True, separators=(",", ":"))
+        result[f"{path}[{identity_token}][{occurrence}].distance"] = np.asarray(
+            [float(numeric)], dtype=np.float64
+        )
     return result
 
 
@@ -3256,6 +3286,7 @@ def _prepare_attempt(prepared: PreparedRun, pair: Mapping[str, Any], side: str) 
         "pair_registry_path": str(prepared.pair_registry_path),
         "pair_registry_sha256": prepared.pair_registry["pair_registry_sha256"],
         "python": prepared.run_spec["python"],
+        "worker_timeout_seconds": prepared.run_spec["worker_timeout_seconds"],
         "output_root": prepared.run_spec["output_root"],
         "parent_pid": os.getpid(),
     }
@@ -3380,6 +3411,20 @@ def _verify_worker_binding(
         raise ProvenanceError("worker trace ID differs from the run specification")
     if str(job.get("action_tape_sha256", "")).lower() != str(run_spec["action_tape"]["sha256"]).lower():
         raise ProvenanceError("worker action tape hash differs from the run specification")
+    try:
+        job_timeout = float(job.get("worker_timeout_seconds"))
+        frozen_timeout = float(run_spec.get("worker_timeout_seconds"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProvenanceError("worker timeout is missing or invalid") from exc
+    if (
+        isinstance(job.get("worker_timeout_seconds"), bool)
+        or not math.isfinite(job_timeout)
+        or job_timeout <= 0
+        or not math.isfinite(frozen_timeout)
+        or frozen_timeout <= 0
+        or job_timeout != frozen_timeout
+    ):
+        raise ProvenanceError("worker timeout differs from the run specification")
 
     trace_id = str(run_spec["trace_id"])
     tape, tape_sha = _load_tape(registry, config=config, trace_id=trace_id)
@@ -3512,6 +3557,9 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
         "pairs": copy.deepcopy(pairs),
         "terminal_contract": terminal_contract,
         "python": str(config.get("python", sys.executable)),
+        "worker_timeout_seconds": float(
+            config.get("worker_timeout_seconds", DEFAULT_WORKER_TIMEOUT_SECONDS)
+        ),
         "runtime": {
             "include_policy": False,
             "call_policy": False,
@@ -3580,6 +3628,30 @@ def _normalise_process_result(value: Any) -> dict[str, Any]:
     return {"status": "failed", "error": f"unsupported process result: {type(value).__name__}"}
 
 
+def _finalize_process_result(
+    result: Mapping[str, Any], request: Mapping[str, Any], *, strict: bool
+) -> dict[str, Any]:
+    """Apply the parent-side status/hash contract without hiding omissions."""
+
+    normalized = _json_restore(dict(result))
+    if normalized.get("status") is None:
+        normalized["status"] = "completed" if normalized.get("terminal") else "failed"
+    if normalized.get("status") == "completed" and "output_sha256" not in normalized:
+        if strict:
+            failure = _attempt_failure(
+                request,
+                ProtocolError("completed worker result is missing output_sha256"),
+            )
+            # Preserve the independently written result/log references.  Do
+            # not retain the full trajectory in the parent failure record.
+            if isinstance(normalized.get("worker_transport"), Mapping):
+                failure["worker_transport"] = copy.deepcopy(normalized["worker_transport"])
+            failure["worker_result_status"] = "completed"
+            return failure
+        normalized["output_sha256"] = payload_sha256(normalized)
+    return normalized
+
+
 def _bind_worker_result(result: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
     """Reject worker output that cannot be bound to its frozen attempt slot."""
 
@@ -3628,10 +3700,52 @@ def _default_process_runner(attempt: Mapping[str, Any]) -> dict[str, Any]:
         "--result",
         str(result_path),
     ]
-    completed = subprocess.run(command, cwd=str(_ROOT), capture_output=True, text=True, check=False)
+    raw_timeout = attempt.get("worker_timeout_seconds", DEFAULT_WORKER_TIMEOUT_SECONDS)
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProtocolError("worker_timeout_seconds must be finite and positive") from exc
+    if isinstance(raw_timeout, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ProtocolError("worker_timeout_seconds must be finite and positive")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial_stdout = getattr(exc, "stdout", None)
+        if partial_stdout is None:
+            partial_stdout = getattr(exc, "output", None)
+        partial_stderr = getattr(exc, "stderr", None)
+        stdout_record = _stream_artifact(stdout_path, partial_stdout)
+        stderr_record = _stream_artifact(stderr_path, partial_stderr)
+        transport = {
+            "protocol": "dedicated_result_file_v1",
+            "returncode": None,
+            "timed_out": True,
+            "timeout_seconds": timeout_seconds,
+            "result": {
+                "path": str(result_path),
+                "exists": result_path.is_file() and not result_path.is_symlink(),
+            },
+            "stdout": stdout_record,
+            "stderr": stderr_record,
+        }
+        failure = _attempt_failure(
+            attempt,
+            ProtocolError(f"worker timed out after {timeout_seconds:g} seconds"),
+        )
+        failure["worker_transport"] = transport
+        return failure
     transport: dict[str, Any] = {
         "protocol": "dedicated_result_file_v1",
         "returncode": int(completed.returncode),
+        "timed_out": False,
+        "timeout_seconds": timeout_seconds,
         "result": {
             "path": str(result_path),
             "exists": result_path.is_file() and not result_path.is_symlink(),
@@ -3702,24 +3816,27 @@ def run_calibration(
         "action_shape": list(ACTION_SHAPE),
         "action_dtype": "float32",
     }
+    # Only compact attempt summaries survive the pair loop.  Full A/B
+    # trajectories exist at most for the currently validating pair.
     attempts: list[dict[str, Any]] = []
     by_pair: dict[str, dict[str, Mapping[str, Any]]] = {}
     integrity_errors: list[str] = []
     attempt_artifacts: list[dict[str, Any]] = []
+    validations: list[PairValidation] = []
+    measurement_records: list[dict[str, Any]] = []
+    parent_pid = os.getpid()
     for pair in pairs:
         if not isinstance(pair, Mapping):
             raise ProvenanceError("pair registry contains a malformed pair")
         pair_id = str(pair["pair_id"])
+        pair_attempts: dict[str, Mapping[str, Any]] = {}
         for side in ("A", "B"):
             request = _prepare_attempt(prepared, pair, side)
             if strict:
                 request["runtime_identity_contract"] = copy.deepcopy(runtime_identity_contract)
             try:
                 result = _bind_worker_result(_normalise_process_result(runner(request)), request)
-                if result.get("status") is None:
-                    result["status"] = "completed" if result.get("terminal") else "failed"
-                if result.get("status") == "completed" and "output_sha256" not in result:
-                    result["output_sha256"] = payload_sha256(result)
+                result = _finalize_process_result(result, request, strict=strict)
             except Exception as exc:
                 result = _attempt_failure(request, exc)
                 result.update({"attempt_id": request["attempt_id"], "pair_id": pair_id, "side": side})
@@ -3769,26 +3886,38 @@ def run_calibration(
                     "hash_domain": "canonical_json_bytes_with_trailing_newline",
                 },
             }
-            attempts.append(result)
-            by_pair.setdefault(pair_id, {})[side] = result
-    parent_pid = os.getpid()
-    validations: list[PairValidation] = []
-    for pair in pairs:
-        pair_id = str(pair["pair_id"])
-        validations.append(
-            validate_pair(
-                pair,
-                by_pair.get(pair_id, {}),
-                parent_pid=parent_pid,
-                expected_frozen_inputs=expected_frozen_inputs,
-                expected_terminal=prepared.run_spec.get("terminal_contract"),
-                expected_runtime_identity=runtime_identity_contract if strict else None,
-                expected_windows=prepared.run_spec.get("windows") if strict else None,
-                expected_action_tape=prepared.tape if strict else None,
-                required_invariant_roots=_configured_invariant_roots(config),
-                strict=strict,
-            )
+            summary = _compact_attempt_summary(result)
+            attempts.append(summary)
+            by_pair.setdefault(pair_id, {})[side] = summary
+            pair_attempts[side] = result
+        full_validation = validate_pair(
+            pair,
+            pair_attempts,
+            parent_pid=parent_pid,
+            expected_frozen_inputs=expected_frozen_inputs,
+            expected_terminal=prepared.run_spec.get("terminal_contract"),
+            expected_runtime_identity=runtime_identity_contract if strict else None,
+            expected_windows=prepared.run_spec.get("windows") if strict else None,
+            expected_action_tape=prepared.tape if strict else None,
+            required_invariant_roots=_configured_invariant_roots(config),
+            strict=strict,
         )
+        compact_measurements = _compact_pair_measurements(full_validation, config=config)
+        compact_validation = PairValidation(
+            full_validation.pair_id,
+            full_validation.trace_id,
+            full_validation.valid,
+            full_validation.reasons,
+            {},
+            full_validation.discrete,
+            compact_measurements,
+        )
+        validations.append(compact_validation)
+        measurement_records.append(compact_measurements)
+        # Explicitly drop the trajectory-bearing objects before launching the
+        # next pair; immutable attempt artifacts remain independently readable.
+        pair_attempts.clear()
+        full_validation = None
     complete_validations = [item for item in validations if item.valid]
     candidate_valid_count = len(complete_validations)
     valid_count = candidate_valid_count if candidate_valid_count == PAIR_COUNT else 0
@@ -3906,6 +4035,12 @@ def run_calibration(
         {
             "schema_version": SCHEMA_VERSION,
             "final_pair_registry_sha256": final_pair_registry["final_pair_registry_sha256"],
+            # Compact scalar measurements are reduced and retained by the
+            # parent immediately after each pair is validated.  Keep this
+            # explicit record separate from the validation/index summaries;
+            # the full trajectories remain only in the immutable attempt
+            # artifacts referenced below.
+            "measurement_records": measurement_records,
             "pairs": result["pair_results"],
             # Validation summaries and immutable artifact references are
             # sufficient to reconstruct every pair independently; embedding
@@ -4090,6 +4225,195 @@ def _renderer_images(
     return result
 
 
+def _compact_pair_measurements(validation: PairValidation, *, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Reduce one validated pair to aggregate-ready scalar evidence.
+
+    The full A/B attempt remains available in its immutable artifact on disk
+    while this parent-side record retains only numeric deltas, RGB metrics,
+    controls, and provenance coordinates needed for envelope aggregation.
+    """
+
+    if not validation.valid:
+        return {
+            "schema_version": 1,
+            "pair_id": validation.pair_id,
+            "trace_id": validation.trace_id,
+            "physics_samples": [],
+            "renderer_samples": [],
+        }
+    attempts = validation.attempts
+    left, right = attempts.get("A"), attempts.get("B")
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        raise NullCalibrationError("validated pair has no A/B evidence for compaction")
+    strict_contract = bool(config and config.get("strict_runtime_contract"))
+    roots = DEFAULT_QUANTITY_ROOTS
+    if isinstance(config, Mapping):
+        selection = config.get("quantity_selection")
+        if isinstance(selection, Mapping) and isinstance(selection.get("root_patterns"), Sequence):
+            roots = tuple(str(item) for item in selection["root_patterns"])
+    renderer_config = config.get("renderer", {}) if isinstance(config, Mapping) else {}
+    configured_camera = (
+        str(renderer_config.get("camera", DEFAULT_CAMERA))
+        if isinstance(renderer_config, Mapping)
+        else DEFAULT_CAMERA
+    )
+    configured_key = (
+        str(renderer_config.get("observation_key", DEFAULT_RENDER_KEY))
+        if isinstance(renderer_config, Mapping)
+        else DEFAULT_RENDER_KEY
+    )
+    left_windows, right_windows = _window_map(left), _window_map(right)
+    physics_samples: list[dict[str, Any]] = []
+    renderer_samples: list[dict[str, Any]] = []
+    hard_gate = _load_hard_gate_for_envelope()
+    for window_id in sorted(left_windows):
+        lwindow, rwindow = left_windows.get(window_id), right_windows.get(window_id)
+        if lwindow is None or rwindow is None:
+            raise NullCalibrationError(f"pair {validation.pair_id} has an incomplete window set")
+        lsnap, rsnap = _window_snapshots(lwindow), _window_snapshots(rwindow)
+        for horizon in sorted(lsnap):
+            left_values = _selected_numeric_leaves(lsnap[horizon], roots)
+            right_values = _selected_numeric_leaves(rsnap[horizon], roots)
+            if set(left_values) != set(right_values):
+                raise NullCalibrationError(
+                    f"quantity path set differs at {validation.pair_id}/{window_id}/{horizon}"
+                )
+            regimes = lwindow.get("regimes", lwindow.get("regime", [window_id]))
+            if isinstance(regimes, str):
+                regimes = [regimes]
+            left_action = _snapshot_action(lsnap[horizon])
+            right_action = _snapshot_action(rsnap[horizon])
+            if strict_contract and (
+                left_action is None
+                or right_action is None
+                or left_action.tobytes(order="C") != right_action.tobytes(order="C")
+            ):
+                raise NullCalibrationError(
+                    f"{validation.pair_id}/{window_id}/{horizon} frozen action evidence differs"
+                )
+            history_left = [lsnap[step] for step in sorted(lsnap)]
+            history_right = [rsnap[step] for step in sorted(rsnap)]
+            for quantity in sorted(left_values):
+                left_value, right_value = left_values[quantity], right_values[quantity]
+                if left_value.shape != right_value.shape:
+                    raise NullCalibrationError(
+                        f"quantity shape differs at {validation.pair_id}/{window_id}/{horizon}"
+                    )
+                difference = np.asarray(left_value, dtype=np.float64) - np.asarray(
+                    right_value, dtype=np.float64
+                )
+                if difference.size == 0 or not np.all(np.isfinite(difference)):
+                    raise NullCalibrationError("compact physics difference is empty or non-finite")
+                max_abs = float(np.max(np.abs(difference)))
+                for regime in (str(item) for item in regimes):
+                    physics_samples.append(
+                        {
+                            "pair_id": validation.pair_id,
+                            "trace_id": validation.trace_id,
+                            "regime": regime,
+                            "quantity": quantity,
+                            "horizon": int(horizon),
+                            "difference": max_abs,
+                            "independent_evidence": _independent_evidence(
+                                regime,
+                                history_left[0],
+                                lsnap[horizon],
+                                action=left_action,
+                                history=history_left,
+                                strict=strict_contract,
+                            ),
+                        }
+                    )
+            left_images = _renderer_images(
+                lsnap[horizon],
+                camera=configured_camera,
+                configured_key=configured_key,
+                strict=strict_contract,
+            )
+            right_images = _renderer_images(
+                rsnap[horizon],
+                camera=configured_camera,
+                configured_key=configured_key,
+                strict=strict_contract,
+            )
+            if set(left_images) != set(right_images):
+                raise NullCalibrationError(
+                    f"renderer observation key set differs at {validation.pair_id}/{window_id}/{horizon}"
+                )
+            controls = _attempt_control_pair(
+                left,
+                right,
+                left_action=left_action,
+                right_action=right_action,
+                strict=strict_contract,
+            )
+            for key in sorted(left_images):
+                metrics = hard_gate.rgb_disagreement_metrics(left_images[key], right_images[key])
+                image_camera = _renderer_camera_for_key(key) or configured_camera
+                for regime in (str(item) for item in regimes):
+                    renderer_samples.append(
+                        {
+                            "pair_id": validation.pair_id,
+                            "trace_id": validation.trace_id,
+                            "camera": image_camera,
+                            "key": key,
+                            "regime": regime,
+                            "horizon": int(horizon),
+                            "duplicate_controls": [
+                                np.ascontiguousarray(np.asarray(item)).copy() for item in controls
+                            ],
+                            "metrics": {
+                                "differing_pixel_count": int(metrics["differing_pixel_count"]),
+                                "max_abs": float(metrics["max_abs"]),
+                                "mean_abs": float(metrics["mean_abs"]),
+                            },
+                        }
+                    )
+    return {
+        "schema_version": 1,
+        "pair_id": validation.pair_id,
+        "trace_id": validation.trace_id,
+        "physics_samples": physics_samples,
+        "renderer_samples": renderer_samples,
+    }
+
+
+def _compact_attempt_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only non-trajectory attempt metadata in parent memory/results."""
+
+    fields = (
+        "attempt_id",
+        "pair_id",
+        "side",
+        "status",
+        "error",
+        "pid",
+        "ppid",
+        "process_start_identity",
+        "process_start_identity_source",
+        "output_sha256",
+        "artifact_path",
+        "artifact_sha256",
+        "artifact_size",
+        "artifact_integrity",
+        "worker_transport",
+        "worker_result_status",
+        "frozen_inputs",
+        "terminal",
+        "protocol",
+        "reset_provenance",
+        "runtime",
+        "close_evidence",
+    )
+    summary = {name: copy.deepcopy(result[name]) for name in fields if name in result}
+    terminal = summary.get("terminal")
+    if isinstance(terminal, Mapping):
+        terminal = dict(terminal)
+        terminal.pop("terminal_observation", None)
+        summary["terminal"] = terminal
+    return summary
+
+
 def build_envelopes(
     pair_results: Iterable[PairValidation],
     *,
@@ -4107,6 +4431,24 @@ def build_envelopes(
         raise NullCalibrationError("pair envelope input IDs do not match the frozen 20-pair schedule")
     if any(not by_id[pair_id].valid for pair_id in required):
         raise NullCalibrationError("invalid or semantically divergent pair cannot enter envelope aggregation")
+    # The authoritative run drops full A/B trajectories immediately after
+    # validating each pair.  Aggregate its compact scalar records directly;
+    # legacy fixture callers with full attempts continue through the detailed
+    # structural-validation path below.
+    compact_flags = [
+        isinstance(by_id[pair_id].measurements, Mapping)
+        and "physics_samples" in by_id[pair_id].measurements
+        and "renderer_samples" in by_id[pair_id].measurements
+        for pair_id in required
+    ]
+    if any(compact_flags):
+        if not all(compact_flags):
+            raise NullCalibrationError("pair envelope inputs mix compact and full trajectory records")
+        return _build_envelopes_from_compact(
+            values,
+            required_pair_ids=required,
+            config=config,
+        )
     strict_contract = bool(config and config.get("strict_runtime_contract"))
     required_invariant_roots = _configured_invariant_roots(config or {}) if strict_contract else ()
     roots = DEFAULT_QUANTITY_ROOTS
@@ -4317,6 +4659,145 @@ def _load_hard_gate_for_envelope() -> Any:
     from scripts import m1_hard_gate
 
     return m1_hard_gate
+
+
+def _build_envelopes_from_compact(
+    pair_results: Sequence[PairValidation],
+    *,
+    required_pair_ids: Sequence[str],
+    config: Mapping[str, Any] | None = None,
+) -> EnvelopeBundle:
+    """Aggregate pair-reduced measurements without retaining raw trajectories.
+
+    ``run_calibration`` validates and compacts one pair before launching the
+    next pair.  The compact records contain scalar physics deltas, renderer
+    metrics, frozen controls, and independent-evidence summaries; all raw
+    snapshots remain in their immutable attempt artifacts.  Keep the legacy
+    full-attempt path in :func:`build_envelopes` for small fixture callers,
+    while making the authoritative schedule use this bounded-memory path.
+    """
+
+    required = [str(item) for item in required_pair_ids]
+    if len(required) != PAIR_COUNT or len(set(required)) != PAIR_COUNT:
+        raise NullCalibrationError("exactly 20 distinct required pair IDs are required")
+    by_id = {item.pair_id: item for item in pair_results if isinstance(item, PairValidation)}
+    if set(by_id) != set(required):
+        raise NullCalibrationError("pair envelope input IDs do not match the frozen 20-pair schedule")
+    if any(not by_id[pair_id].valid for pair_id in required):
+        raise NullCalibrationError("invalid or semantically divergent pair cannot enter envelope aggregation")
+
+    physics_samples: list[dict[str, Any]] = []
+    renderer_samples: list[dict[str, Any]] = []
+    path_sets: dict[tuple[str, int], set[str]] = {}
+    per_pair_paths: dict[tuple[str, str, int], set[str]] = {}
+    traces: set[str] = set()
+    hard_gate = _load_hard_gate_for_envelope()
+    for pair_id in required:
+        pair = by_id[pair_id]
+        measurements = pair.measurements
+        if not isinstance(measurements, Mapping):
+            raise NullCalibrationError(f"pair {pair_id} compact measurements are missing")
+        raw_physics = measurements.get("physics_samples")
+        raw_renderer = measurements.get("renderer_samples")
+        if not isinstance(raw_physics, Sequence) or isinstance(raw_physics, (str, bytes)):
+            raise NullCalibrationError(f"pair {pair_id} compact physics measurements are missing")
+        if not isinstance(raw_renderer, Sequence) or isinstance(raw_renderer, (str, bytes)):
+            raise NullCalibrationError(f"pair {pair_id} compact renderer measurements are missing")
+        if pair.trace_id is None:
+            raise NullCalibrationError(f"pair {pair_id} compact trace identity is missing")
+        traces.add(str(pair.trace_id))
+        for index, raw_sample in enumerate(raw_physics):
+            if not isinstance(raw_sample, Mapping):
+                raise NullCalibrationError(f"pair {pair_id} compact physics sample {index} is malformed")
+            sample = copy.deepcopy(dict(raw_sample))
+            if str(sample.get("pair_id")) != pair_id or str(sample.get("trace_id")) != str(pair.trace_id):
+                raise NullCalibrationError(f"pair {pair_id} compact physics provenance is inconsistent")
+            regime = hard_gate.normalize_regime(sample.get("regime"))
+            quantity = str(sample.get("quantity", ""))
+            raw_horizon = sample.get("horizon")
+            if isinstance(raw_horizon, bool) or not isinstance(raw_horizon, (int, np.integer)) or int(raw_horizon) < 0:
+                raise NullCalibrationError(f"pair {pair_id} compact physics horizon is invalid")
+            horizon = int(raw_horizon)
+            if not quantity:
+                raise NullCalibrationError(f"pair {pair_id} compact physics quantity is missing")
+            path_sets.setdefault((regime, horizon), set()).add(quantity)
+            per_pair_paths.setdefault((pair_id, regime, horizon), set()).add(quantity)
+            physics_samples.append(sample)
+        for index, raw_sample in enumerate(raw_renderer):
+            if not isinstance(raw_sample, Mapping):
+                raise NullCalibrationError(f"pair {pair_id} compact renderer sample {index} is malformed")
+            sample = copy.deepcopy(dict(raw_sample))
+            if str(sample.get("pair_id")) != pair_id or str(sample.get("trace_id")) != str(pair.trace_id):
+                raise NullCalibrationError(f"pair {pair_id} compact renderer provenance is inconsistent")
+            renderer_samples.append(sample)
+
+    for (pair_id, regime, horizon), quantities in sorted(per_pair_paths.items()):
+        expected = path_sets[(regime, horizon)]
+        if quantities != expected:
+            raise NullCalibrationError(
+                f"compact quantity-selection path set is inconsistent at {pair_id}/{regime}/{horizon}"
+            )
+    if not physics_samples:
+        raise NullCalibrationError("no compact physics quantities were observed")
+    required_groups = sorted(
+        {
+            (hard_gate.normalize_regime(item["regime"]), str(item["quantity"]), int(item["horizon"]))
+            for item in physics_samples
+        }
+    )
+    physics = hard_gate.build_grouped_null_envelope(
+        physics_samples,
+        selected_trace_ids=sorted(traces),
+        required_groups=required_groups,
+        min_pairs=PAIR_COUNT,
+        min_pairs_per_trace=5,
+        min_samples_per_regime=5,
+        global_tolerance=None,
+    )
+    if not renderer_samples:
+        raise NullCalibrationError("no compact RGB observations were observed")
+    renderer = hard_gate.build_renderer_envelopes(
+        renderer_samples,
+        exact_only=None,
+        min_samples_per_group=PAIR_COUNT,
+    )
+    renderer_config = config.get("renderer", {}) if isinstance(config, Mapping) else {}
+    configured_camera = (
+        str(renderer_config.get("camera", DEFAULT_CAMERA))
+        if isinstance(renderer_config, Mapping)
+        else DEFAULT_CAMERA
+    )
+    configured_key = (
+        str(renderer_config.get("observation_key", DEFAULT_RENDER_KEY))
+        if isinstance(renderer_config, Mapping)
+        else DEFAULT_RENDER_KEY
+    )
+    renderer.setdefault("coverage", {}).update(
+        {
+            "n_pairs": PAIR_COUNT,
+            "pair_ids": sorted(required),
+            "configured_camera": configured_camera,
+            "configured_observation_key": configured_key,
+        }
+    )
+    discrete = {
+        "categorical_gate": all(item.discrete.get("categorical_gate", False) for item in by_id.values()),
+        "contact_identity_exact": all(item.discrete.get("contact_identity_exact", False) for item in by_id.values()),
+        "predicate_exact": all(item.discrete.get("predicate_exact", False) for item in by_id.values()),
+        "success_exact": all(item.discrete.get("success_exact", False) for item in by_id.values()),
+        "done_termination_exact": all(item.discrete.get("done_termination_exact", False) for item in by_id.values()),
+        "terminal_timing_exact": all(item.discrete.get("terminal_timing_exact", False) for item in by_id.values()),
+        "gripper_exact": all(item.discrete.get("gripper_exact", False) for item in by_id.values()),
+        "action_exact": all(item.discrete.get("action_exact", False) for item in by_id.values()),
+        "observation_exact": all(item.discrete.get("observation_exact", False) for item in by_id.values()),
+        "pair_count": PAIR_COUNT,
+        "divergences": [
+            {"pair_id": item.pair_id, "reasons": list(item.reasons)}
+            for item in by_id.values()
+            if item.reasons
+        ],
+    }
+    return EnvelopeBundle(physics=physics, renderer=renderer, discrete=discrete)
 
 
 def _load_prepared_from_run_spec(run_spec_path: str | Path) -> PreparedRun:
