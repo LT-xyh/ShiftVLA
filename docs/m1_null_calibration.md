@@ -120,3 +120,47 @@ envelopes, and `terminal_manifest.json`.  A terminal status is `PASS` only
 when all 20 pairs are complete, independent, semantically equal, contact-rich
 coverage is present, all groups are covered, and every artifact hash verifies;
 otherwise it is `BLOCKED` with the causal failure retained.
+
+## R1 backend checkpoint review (2026-09-09)
+
+The main agent reviewed the current EGL-backend code and tests against base
+commit `5f3b7409938e701fdef3fc3138bfa7930bafb97c`. This is a backend
+implementation checkpoint, **not** a completed LIBERO preflight implementation
+or an empirical admission result.
+
+> independent quality-review subagents repeatedly failed to return; no review conclusion was fabricated or assumed.
+
+The bounded backend specification review returned ACCEPT. The main-agent
+diff review accepts the backend slice: raw enumeration uses the EGL integer
+ABI, failed non-null handles retain cleanup ownership, and each applicable
+cleanup is attempted once. Independent quality review remains unavailable,
+not PASS; its unavailability alone is not an experimental blocker.
+
+The requested preflight boundary audit found:
+
+| Boundary | Current evidence |
+| --- | --- |
+| Official construction plus one public `render()` | Not implemented in the admission module yet. |
+| No step, outer reset, settle/dummy action, RuntimeAdapter, policy/processor/checkpoint, null measurement, or experimental frame persistence | No such execution is introduced by the backend diff; this does not prove the absent preflight execution path. |
+| Environment close and fresh-process termination | Private EGL cleanup is implemented and fake-tested; LIBERO cleanup and a fresh-child launcher remain unimplemented. |
+| Preserved M1-N0 bundle | Complete predecessor tree and semantic hashes reverified unchanged. |
+| Renderer versus compute namespace | Ordinal remains an EGL enumeration index; the R1 config separately fixes renderer ordinal 0 and `not_applicable_no_policy`. No K100/DCU affinity mapping is introduced. |
+
+The admission CLI, metadata collectors, three-fresh-child launch path, and
+the instrumented single-render LIBERO worker still need implementation before
+the one-shot command can run. Existing passing backend/contract tests cannot
+stand in for tests of that missing path. The frozen admission root, R1 null
+configuration, and new null output root are absent at this checkpoint.
+
+Thus `Renderer Preflight = NOT RUN` and `M1-N0 = BLOCKED` remain unchanged.
+No authoritative schedule may be created before a committed implementation
+produces terminal preflight PASS. Future review unavailability must be recorded
+explicitly for a main-agent decision, not retried indefinitely.
+
+Verification at this checkpoint used the frozen CPU interpreter:
+`pytest tests/test_m1_renderer_admission.py tests/test_m1_null_calibration.py -q`
+returned **189 passed in 34.79s**; `py_compile` and `git diff --check` passed.
+Only the admission script, its tests, and this review note are in scope for
+the checkpoint commit. `AGENTS.md`, M0 evidence, and unrelated untracked
+artifacts remain excluded. The resulting commit is a backend checkpoint,
+not the final admission execution source identity `P`.

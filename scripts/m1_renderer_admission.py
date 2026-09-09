@@ -8,6 +8,7 @@ processor, or policy import.  Runtime probing is implemented in later tasks.
 from __future__ import annotations
 
 import copy
+import ctypes
 import hashlib
 import json
 import os
@@ -22,6 +23,10 @@ import yaml
 
 class AdmissionError(RuntimeError):
     """The frozen renderer-admission contract was violated."""
+
+    def __init__(self, message: str, *, cleanup: Mapping[str, Any] | None = None):
+        super().__init__(message)
+        self.cleanup = cleanup
 
 
 class ProvenanceError(AdmissionError):
@@ -833,7 +838,7 @@ def _validate_worker_preimport_fingerprint(value: Mapping[str, Any]) -> None:
         "governed_environment",
         "static_graphics_libraries",
     }
-    if set(value) != expected_top:
+    if not isinstance(value, Mapping) or set(value) != expected_top:
         raise AdmissionError("worker preimport fingerprint schema forbids context, GL, loaded, or other extra fields")
     if value["schema_version"] != 1:
         raise AdmissionError("worker preimport fingerprint schema version mismatch")
@@ -994,6 +999,353 @@ def query_egl_devices_two_call(backend: Any) -> list[Any]:
     return devices
 
 
+class _OwnedEGLHandleError(AdmissionError):
+    """Terminal EGL error carrying a handle returned before error reporting."""
+
+    def __init__(self, message: str, *, handle: Any, resource: str):
+        super().__init__(message)
+        self._owned_handle = handle
+        self._owned_resource = resource
+
+    def take_ownership(self) -> tuple[str, Any]:
+        resource = self._owned_resource
+        handle = self._owned_handle
+        self._owned_handle = None
+        return resource, handle
+
+
+class InjectedEGLBackend:
+    """Small lazy adapter over the pinned MuJoCo EGL and PyOpenGL modules."""
+
+    _DRM_TOKENS = {"drm_device_file": 0x3233, "drm_render_node_file": 0x3377}
+
+    def __init__(self, egl: Any, gl: Any):
+        self.egl = egl
+        self.gl = gl
+
+    @classmethod
+    def load(cls) -> "InjectedEGLBackend":
+        import importlib
+
+        return cls(
+            importlib.import_module("mujoco.egl.egl_ext"),
+            importlib.import_module("OpenGL.GL"),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.egl, name)
+
+    def eglQueryDevicesEXT(self, capacity: int, devices: Any, count: list[int]) -> Any:
+        raw_count = self.egl.EGLint()
+        raw_devices = None
+        if capacity:
+            raw_devices = (self.egl.EGLDeviceEXT * capacity)()
+        result = self.egl._eglQueryDevicesEXT(
+            capacity, raw_devices, ctypes.byref(raw_count)
+        )
+        count[0] = int(raw_count.value)
+        if raw_devices is not None:
+            for index in range(min(capacity, raw_count.value)):
+                raw_device = raw_devices[index]
+                # ctypes arrays of c_void_p expose their elements as plain
+                # integers.  Re-wrap those values so the adapter's public
+                # seam consistently returns the declared EGLDeviceEXT type.
+                device_type = self.egl.EGLDeviceEXT
+                try:
+                    already_typed = isinstance(raw_device, device_type)
+                except TypeError:
+                    already_typed = False
+                if not already_typed:
+                    raw_value = getattr(raw_device, "value", raw_device)
+                    try:
+                        raw_device = device_type(raw_value)
+                    except (TypeError, ValueError):
+                        # A non-ctypes fake handle is already a valid value for
+                        # an injected backend and should pass through unchanged.
+                        pass
+                devices[index] = raw_device
+        return result
+
+    @staticmethod
+    def is_no_device(handle: Any) -> bool:
+        try:
+            return not bool(handle)
+        except (TypeError, ValueError):
+            return False
+
+    def _query_device_string(self, device: Any, token: int, *, allow_null: bool) -> str | None:
+        address = self.egl.eglGetProcAddress("eglQueryDeviceStringEXT")
+        if not address:
+            raise AdmissionError("eglQueryDeviceStringEXT is unavailable")
+        query = address
+        try:
+            pointer = ctypes.cast(address, ctypes.c_void_p).value
+        except (TypeError, ctypes.ArgumentError):
+            pass
+        else:
+            prototype = ctypes.CFUNCTYPE(
+                ctypes.c_char_p, self.egl.EGLDeviceEXT, self.egl.EGLint
+            )
+            query = prototype(pointer)
+        raw = query(device, token)
+        error = self.egl.eglGetError()
+        if error != self.egl.EGL_SUCCESS:
+            raise AdmissionError(
+                f"eglQueryDeviceStringEXT failed with EGL error {int(error)}"
+            )
+        if raw is None:
+            if allow_null:
+                return None
+            raise AdmissionError("eglQueryDeviceStringEXT returned a null extension string")
+        if not isinstance(raw, bytes):
+            raise AdmissionError("eglQueryDeviceStringEXT returned a non-byte string")
+        try:
+            return raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            raise AdmissionError("eglQueryDeviceStringEXT returned invalid UTF-8") from error
+
+    def query_device_extensions(self, device: Any) -> list[str]:
+        value = self._query_device_string(
+            device, self.egl.EGL_EXTENSIONS, allow_null=False
+        )
+        assert value is not None
+        return value.split()
+
+    def query_device_drm_node(self, device: Any, field: str) -> str | None:
+        if field not in self._DRM_TOKENS:
+            raise AdmissionError("unknown EGL DRM descriptor field")
+        return self._query_device_string(
+            device, self._DRM_TOKENS[field], allow_null=True
+        )
+
+    def _checked(self, operation: str, call: Callable[[], Any]) -> Any:
+        result = call()
+        error = self.egl.eglGetError()
+        if result != self.egl.EGL_TRUE or error != self.egl.EGL_SUCCESS:
+            raise AdmissionError(f"{operation} failed with EGL error {int(error)}")
+        return result
+
+    @classmethod
+    def _is_null_handle(cls, handle: Any, sentinel: Any) -> bool:
+        if cls.is_no_device(handle) or handle is sentinel:
+            return True
+        try:
+            return bool(handle == sentinel)
+        except (TypeError, ValueError):
+            return False
+
+    def get_platform_display(self, device: Any) -> Any:
+        display = self.egl.eglGetPlatformDisplayEXT(
+            self.egl.EGL_PLATFORM_DEVICE_EXT, device, None
+        )
+        error = self.egl.eglGetError()
+        no_display = getattr(self.egl, "EGL_NO_DISPLAY", None)
+        if error != self.egl.EGL_SUCCESS:
+            if not self._is_null_handle(display, no_display):
+                raise _OwnedEGLHandleError(
+                    f"display failed with EGL error {int(error)}",
+                    handle=display,
+                    resource="display",
+                )
+            raise AdmissionError(f"display failed with EGL error {int(error)}")
+        if self._is_null_handle(display, no_display):
+            raise AdmissionError(f"display failed with EGL error {int(error)}")
+        return display
+
+    def initialize(self, display: Any) -> None:
+        self._checked("initialize", lambda: self.egl.eglInitialize(display, None, None))
+
+    def choose_config(self, display: Any) -> Any:
+        attributes = (
+            self.egl.EGL_RED_SIZE, 8, self.egl.EGL_GREEN_SIZE, 8,
+            self.egl.EGL_BLUE_SIZE, 8, self.egl.EGL_ALPHA_SIZE, 8,
+            self.egl.EGL_DEPTH_SIZE, 24, self.egl.EGL_STENCIL_SIZE, 8,
+            self.egl.EGL_COLOR_BUFFER_TYPE, self.egl.EGL_RGB_BUFFER,
+            self.egl.EGL_SURFACE_TYPE, self.egl.EGL_PBUFFER_BIT,
+            self.egl.EGL_RENDERABLE_TYPE, self.egl.EGL_OPENGL_BIT,
+            self.egl.EGL_NONE,
+        )
+        config = self.egl.EGLConfig()
+        count = self.egl.EGLint()
+        result = self.egl.eglChooseConfig(
+            display, attributes, ctypes.byref(config), 1, ctypes.byref(count)
+        )
+        error = self.egl.eglGetError()
+        if result != self.egl.EGL_TRUE or error != self.egl.EGL_SUCCESS or count.value < 1:
+            raise AdmissionError(f"choose_config failed with EGL error {int(error)}")
+        return config
+
+    def bind_api(self) -> None:
+        self._checked("bind_api", lambda: self.egl.eglBindAPI(self.egl.EGL_OPENGL_API))
+
+    def create_context(self, display: Any, config: Any) -> Any:
+        context = self.egl.eglCreateContext(display, config, self.egl.EGL_NO_CONTEXT, None)
+        error = self.egl.eglGetError()
+        if error != self.egl.EGL_SUCCESS:
+            if not self._is_null_handle(context, self.egl.EGL_NO_CONTEXT):
+                raise _OwnedEGLHandleError(
+                    f"create_context failed with EGL error {int(error)}",
+                    handle=context,
+                    resource="context",
+                )
+            raise AdmissionError(f"create_context failed with EGL error {int(error)}")
+        if self._is_null_handle(context, self.egl.EGL_NO_CONTEXT):
+            raise AdmissionError(f"create_context failed with EGL error {int(error)}")
+        return context
+
+    def make_current(self, display: Any, context: Any) -> None:
+        self._checked(
+            "make_current",
+            lambda: self.egl.eglMakeCurrent(
+                display, self.egl.EGL_NO_SURFACE, self.egl.EGL_NO_SURFACE, context
+            ),
+        )
+
+    @staticmethod
+    def _decode_identity(raw: Any, label: str) -> str:
+        if not isinstance(raw, bytes):
+            raise AdmissionError(f"{label} returned a null or non-byte identity")
+        try:
+            value = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            raise AdmissionError(f"{label} returned invalid UTF-8") from error
+        if not value:
+            raise AdmissionError(f"{label} returned an empty identity")
+        return value
+
+    def query_egl_identity(self, display: Any) -> dict[str, str]:
+        result = {}
+        for field, token in (("vendor", self.egl.EGL_VENDOR), ("version", self.egl.EGL_VERSION)):
+            raw = self.egl.eglQueryString(display, token)
+            error = self.egl.eglGetError()
+            if error != self.egl.EGL_SUCCESS:
+                raise AdmissionError(f"read_egl {field} failed with EGL error {int(error)}")
+            result[field] = self._decode_identity(raw, f"read_egl {field}")
+        return result
+
+    def query_gl_identity(self) -> dict[str, str]:
+        return {
+            field: self._decode_identity(self.gl.glGetString(token), f"read_gl {field}")
+            for field, token in (
+                ("vendor", self.gl.GL_VENDOR),
+                ("renderer", self.gl.GL_RENDERER),
+                ("version", self.gl.GL_VERSION),
+            )
+        }
+
+    def clear_current(self, display: Any) -> None:
+        self._checked(
+            "clear_current",
+            lambda: self.egl.eglMakeCurrent(
+                display, self.egl.EGL_NO_SURFACE, self.egl.EGL_NO_SURFACE,
+                self.egl.EGL_NO_CONTEXT,
+            ),
+        )
+
+    def destroy_context(self, display: Any, context: Any) -> None:
+        self._checked("destroy_context", lambda: self.egl.eglDestroyContext(display, context))
+
+    def terminate(self, display: Any) -> None:
+        self._checked("terminate", lambda: self.egl.eglTerminate(display))
+
+    def release_thread(self) -> None:
+        self._checked("release_thread", self.egl.eglReleaseThread)
+
+
+def _error_record(error: BaseException) -> dict[str, str]:
+    # Exception text from ctypes/PyOpenGL can contain process-local addresses.
+    # Keep ordinary fake-backend messages for diagnostics, but elide any text
+    # containing a hexadecimal address before it enters persisted evidence.
+    message = str(error)
+    if "0x" in message.lower():
+        message = "unstable error text omitted"
+    return {"type": type(error).__name__, "message": message}
+
+
+def probe_device_context(backend: Any, devices: list[Any], ordinal: int) -> dict[str, Any]:
+    """Probe one private EGL context and audit every applicable cleanup action."""
+
+    if type(ordinal) is not int or not 0 <= ordinal < len(devices):
+        raise AdmissionError("EGL device ordinal is outside the enumerated range")
+    cleanup = {
+        name: {"attempted": False, "success": False, "error": None}
+        for name in ("clear_current", "destroy_context", "terminate", "release_thread")
+    }
+    display = context = None
+    primary: BaseException | None = None
+    result: dict[str, Any] | None = None
+    stage = "display"
+    try:
+        display = backend.get_platform_display(devices[ordinal])
+        stage = "initialize"
+        backend.initialize(display)
+        stage = "choose_config"
+        config = backend.choose_config(display)
+        stage = "bind_api"
+        backend.bind_api()
+        stage = "create_context"
+        context = backend.create_context(display, config)
+        stage = "make_current"
+        backend.make_current(display, context)
+        stage = "read_egl"
+        egl_identity = backend.query_egl_identity(display)
+        stage = "read_gl"
+        gl_identity = backend.query_gl_identity()
+        result = {
+            "ordinal": ordinal,
+            "egl_identity": egl_identity,
+            "gl_identity": gl_identity,
+        }
+    except _OwnedEGLHandleError as error:
+        resource, handle = error.take_ownership()
+        if resource == "display":
+            display = handle
+        elif resource == "context":
+            context = handle
+        else:  # pragma: no cover - only the adapter creates this exception
+            raise
+        primary = error
+    except BaseException as error:
+        primary = error
+    finally:
+        actions = (
+            # Once a context has been created, clear_current is applicable even
+            # when make_current itself raised: the EGL call may have partially
+            # succeeded before its error was observed.
+            ("clear_current", context is not None, lambda: backend.clear_current(display)),
+            ("destroy_context", context is not None, lambda: backend.destroy_context(display, context)),
+            ("terminate", display is not None, lambda: backend.terminate(display)),
+            ("release_thread", True, backend.release_thread),
+        )
+        for name, applicable, action in actions:
+            if not applicable:
+                continue
+            cleanup[name]["attempted"] = True
+            try:
+                action()
+            except BaseException as error:
+                cleanup[name]["error"] = _error_record(error)
+            else:
+                cleanup[name]["success"] = True
+    cleanup["status"] = (
+        "PASS" if primary is None and all(
+            not item["attempted"] or item["success"]
+            for item in cleanup.values() if isinstance(item, dict)
+        ) else "FAIL"
+    )
+    if primary is not None:
+        primary_record = _error_record(primary)
+        raise AdmissionError(
+            f"private EGL context stage {stage} failed ({primary_record['type']})",
+            cleanup=cleanup,
+        ) from primary
+    if cleanup["status"] != "PASS":
+        raise AdmissionError("private EGL context cleanup failed", cleanup=cleanup)
+    assert result is not None
+    result["cleanup"] = cleanup
+    return result
+
+
 def describe_egl_devices(backend: Any, devices: list[Any]) -> list[dict[str, object]]:
     """Describe EGL devices in enumeration order without retaining handles."""
 
@@ -1140,7 +1492,7 @@ def _validate_full_renderer_fingerprint(value: Mapping[str, Any]) -> None:
         "static_graphics_libraries",
     }
     expected = worker_keys | {"egl_identity", "gl_identity", "loaded_graphics_libraries"}
-    if set(value) != expected:
+    if not isinstance(value, Mapping) or set(value) != expected:
         raise AdmissionError(
             "full renderer fingerprint schema forbids volatile, pointer, or other extra fields"
         )

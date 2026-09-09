@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import ctypes
 import hashlib
 import json
 from pathlib import Path
@@ -572,6 +573,237 @@ def test_checked_egl_query_has_no_fixed_ten_device_limit() -> None:
     assert backend.query_calls == [(0, True, None), (17, False, 17)]
 
 
+class _RawEGLModule:
+    EGL_TRUE = 1
+    EGL_SUCCESS = 0x3000
+    EGLint = ctypes.c_int
+    EGLDeviceEXT = ctypes.c_void_p
+    EGL_NO_DEVICE_EXT = ctypes.c_void_p()
+
+    def __init__(self, addresses):
+        self.addresses = addresses
+        self.calls = []
+        self._errors = []
+
+        def raw_query(capacity, devices, count_pointer):
+            self.calls.append((capacity, devices is None))
+            ctypes.cast(count_pointer, ctypes.POINTER(ctypes.c_int))[0] = len(self.addresses)
+            if devices is not None:
+                for index, address in enumerate(self.addresses):
+                    devices[index] = address
+            return self.EGL_TRUE
+
+        self._eglQueryDevicesEXT = raw_query
+
+    def eglGetError(self):
+        return self._errors.pop(0) if self._errors else self.EGL_SUCCESS
+
+
+class _UnusedGLModule:
+    pass
+
+
+@pytest.mark.parametrize("addresses", [[], list(range(1, 18))])
+def test_lazy_backend_adapts_raw_device_query_with_exact_ctypes_buffer(addresses) -> None:
+    admission = _module()
+    egl = _RawEGLModule(addresses)
+    backend = admission.InjectedEGLBackend(egl, _UnusedGLModule())
+    if not addresses:
+        with pytest.raises(admission.AdmissionError, match="non-positive"):
+            admission.query_egl_devices_two_call(backend)
+        assert egl.calls == [(0, True)]
+    else:
+        devices = admission.query_egl_devices_two_call(backend)
+        assert [device.value for device in devices] == addresses
+        assert egl.calls == [(0, True), (len(addresses), False)]
+
+
+@pytest.mark.parametrize(
+    "handle",
+    [None, 0, ctypes.c_void_p(None), ctypes.POINTER(ctypes.c_int)()],
+)
+def test_lazy_backend_recognizes_all_null_device_handle_forms(handle) -> None:
+    admission = _module()
+    backend = admission.InjectedEGLBackend(_RawEGLModule([1]), _UnusedGLModule())
+    assert backend.is_no_device(handle)
+
+
+def test_lazy_backend_loads_renderer_modules_only_when_explicitly_requested(monkeypatch) -> None:
+    admission = _module()
+    imported = []
+
+    def fake_import(name):
+        imported.append(name)
+        return object()
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    backend = admission.InjectedEGLBackend.load()
+    assert imported == ["mujoco.egl.egl_ext", "OpenGL.GL"]
+    assert backend.egl is not backend.gl
+
+
+class _RawDeviceStringEGL(_RawEGLModule):
+    EGL_EXTENSIONS = 0x3055
+
+    def __init__(self):
+        super().__init__([1])
+        self.string_calls = []
+
+        def query_string(device, token):
+            self.string_calls.append((device.value, token))
+            return {
+                0x3055: b"EGL_EXT_device_drm EGL_EXT_device_drm_render_node",
+                0x3233: b"/dev/dri/card0",
+                0x3377: b"/dev/dri/renderD128",
+            }[token]
+
+        self.query_string = query_string
+
+    def eglGetProcAddress(self, name):
+        assert name in ("eglQueryDeviceStringEXT", b"eglQueryDeviceStringEXT")
+        return self.query_string
+
+
+def test_lazy_backend_queries_raw_device_strings_and_exact_drm_tokens() -> None:
+    admission = _module()
+    egl = _RawDeviceStringEGL()
+    backend = admission.InjectedEGLBackend(egl, _UnusedGLModule())
+    descriptors = admission.describe_egl_devices(backend, [ctypes.c_void_p(1)])
+    assert descriptors[0]["drm_device_file"] == "/dev/dri/card0"
+    assert descriptors[0]["drm_render_node_file"] == "/dev/dri/renderD128"
+    assert [token for _device, token in egl.string_calls] == [0x3055, 0x3233, 0x3377]
+
+
+class _ABISensitiveEGLModule:
+    EGL_TRUE = 1
+    EGL_SUCCESS = 0x3000
+    EGL_BAD_ALLOC = 0x3003
+    EGLint = ctypes.c_int
+    EGLDeviceEXT = ctypes.c_void_p
+    EGLConfig = ctypes.c_int
+    EGL_PLATFORM_DEVICE_EXT = 0x313F
+    EGL_NO_DISPLAY = ctypes.c_void_p()
+    EGL_NO_CONTEXT = ctypes.c_void_p()
+    EGL_NO_SURFACE = ctypes.c_void_p()
+    EGL_RED_SIZE = 0x3024
+    EGL_GREEN_SIZE = 0x3023
+    EGL_BLUE_SIZE = 0x3022
+    EGL_ALPHA_SIZE = 0x3021
+    EGL_DEPTH_SIZE = 0x3025
+    EGL_STENCIL_SIZE = 0x3026
+    EGL_COLOR_BUFFER_TYPE = 0x303F
+    EGL_RGB_BUFFER = 0x308E
+    EGL_SURFACE_TYPE = 0x3033
+    EGL_PBUFFER_BIT = 0x0001
+    EGL_RENDERABLE_TYPE = 0x3040
+    EGL_OPENGL_BIT = 0x0008
+    EGL_OPENGL_API = 0x30A2
+    EGL_NONE = 0x3038
+
+    def __init__(self, *, display_error=EGL_SUCCESS, context_error=EGL_SUCCESS,
+                 cleanup_failures=()):
+        self.display_error = display_error
+        self.context_error = context_error
+        self.cleanup_failures = set(cleanup_failures)
+        self.calls = []
+        self._errors = []
+        self.choose_count_types = []
+
+    def _ok(self, name, result=EGL_TRUE):
+        self.calls.append(name)
+        self._errors.append(self.EGL_BAD_ALLOC if name in self.cleanup_failures else self.EGL_SUCCESS)
+        return result
+
+    def eglGetError(self):
+        return self._errors.pop(0) if self._errors else self.EGL_SUCCESS
+
+    def eglGetPlatformDisplayEXT(self, platform, device, attributes):
+        self.calls.append("display")
+        self._errors.append(self.display_error)
+        return ctypes.c_void_p(0x1111)
+
+    def eglInitialize(self, display, major, minor):
+        return self._ok("initialize")
+
+    def eglChooseConfig(self, display, attributes, config, config_size, count):
+        self.calls.append("choose_config")
+        self.choose_count_types.append(type(count))
+        typed_count = ctypes.cast(count, ctypes.POINTER(self.EGLint))
+        typed_count[0] = getattr(self, "reported_count", 1)
+        self._errors.append(self.EGL_SUCCESS)
+        return self.EGL_TRUE
+
+    def eglBindAPI(self, api):
+        return self._ok("bind_api")
+
+    def eglCreateContext(self, display, config, share_context, attributes):
+        self.calls.append("create_context")
+        self._errors.append(self.context_error)
+        return ctypes.c_void_p(0x2222)
+
+    def eglMakeCurrent(self, display, draw, read, context):
+        return self._ok("clear_current" if not context else "make_current")
+
+    def eglDestroyContext(self, display, context):
+        return self._ok("destroy_context")
+
+    def eglTerminate(self, display):
+        return self._ok("terminate")
+
+    def eglReleaseThread(self):
+        return self._ok("release_thread")
+
+
+def test_injected_choose_config_uses_pinned_eglint_pointer_and_rejects_negative_count() -> None:
+    admission = _module()
+    egl = _ABISensitiveEGLModule()
+    backend = admission.InjectedEGLBackend(egl, _UnusedGLModule())
+    assert isinstance(backend.choose_config("display"), ctypes.c_int)
+    assert egl.choose_count_types == [type(ctypes.byref(ctypes.c_int()))]
+
+    egl.reported_count = -1
+    with pytest.raises(admission.AdmissionError, match="choose_config"):
+        backend.choose_config("display")
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected_calls, expected_cleanup",
+    [
+        (
+            {"display_error": _ABISensitiveEGLModule.EGL_BAD_ALLOC,
+             "cleanup_failures": {"terminate", "release_thread"}},
+            ["display", "terminate", "release_thread"],
+            ["terminate", "release_thread"],
+        ),
+        (
+            {"context_error": _ABISensitiveEGLModule.EGL_BAD_ALLOC,
+             "cleanup_failures": {"clear_current", "destroy_context", "terminate", "release_thread"}},
+            ["display", "initialize", "choose_config", "bind_api", "create_context",
+             "clear_current", "destroy_context", "terminate", "release_thread"],
+            ["clear_current", "destroy_context", "terminate", "release_thread"],
+        ),
+    ],
+)
+def test_injected_adapter_hands_off_partial_handles_for_terminal_cleanup(
+    kwargs, expected_calls, expected_cleanup
+) -> None:
+    admission = _module()
+    egl = _ABISensitiveEGLModule(**kwargs)
+    backend = admission.InjectedEGLBackend(egl, _UnusedGLModule())
+    with pytest.raises(admission.AdmissionError) as caught:
+        admission.probe_device_context(backend, [ctypes.c_void_p(7)], 0)
+    assert egl.calls == expected_calls
+    assert caught.value.cleanup["status"] == "FAIL"
+    attempted = {
+        name for name, item in caught.value.cleanup.items()
+        if isinstance(item, dict) and item["attempted"]
+    }
+    assert attempted == set(expected_cleanup)
+    assert all(caught.value.cleanup[name]["success"] is False for name in expected_cleanup)
+    assert "0x" not in str(caught.value)
+    assert "0x" not in repr(caught.value.cleanup)
+
+
 def test_checked_egl_query_rejects_no_device_sentinel() -> None:
     admission = _module()
     backend = _FakeEGLBackend()
@@ -669,6 +901,161 @@ def test_descriptor_drm_fields_have_independent_extension_gates(
     assert descriptor["drm_device_file"] == expected_primary
     assert descriptor["drm_render_node_file"] == expected_render
     assert [field for _handle, field in backend.drm_calls] == expected_fields
+
+
+class _ContextBackend:
+    EGL_NO_DISPLAY = None
+    EGL_NO_CONTEXT = None
+
+    def __init__(self, *, fail=None, cleanup_fail=()):
+        self.fail = fail
+        self.cleanup_fail = set(cleanup_fail)
+        self.events = []
+
+    def _step(self, name, value=True):
+        self.events.append(name)
+        if self.fail == name or name in self.cleanup_fail:
+            raise RuntimeError(f"{name} failed")
+        return value
+
+    def get_platform_display(self, device):
+        return self._step("display", "display-handle")
+
+    def initialize(self, display):
+        return self._step("initialize")
+
+    def choose_config(self, display):
+        return self._step("choose_config", "config-handle")
+
+    def bind_api(self):
+        return self._step("bind_api")
+
+    def create_context(self, display, config):
+        return self._step("create_context", "context-handle")
+
+    def make_current(self, display, context):
+        return self._step("make_current")
+
+    def query_egl_identity(self, display):
+        return self._step("read_egl", {"vendor": "Mesa Project", "version": "1.5"})
+
+    def query_gl_identity(self):
+        return self._step(
+            "read_gl", {"vendor": "Mesa/X.org", "renderer": "llvmpipe", "version": "3.1"}
+        )
+
+    def clear_current(self, display):
+        return self._step("clear_current")
+
+    def destroy_context(self, display, context):
+        return self._step("destroy_context")
+
+    def terminate(self, display):
+        return self._step("terminate")
+
+    def release_thread(self):
+        return self._step("release_thread")
+
+
+def test_private_device_context_success_has_exact_lifecycle_and_cleanup_audit() -> None:
+    admission = _module()
+    backend = _ContextBackend()
+    result = admission.probe_device_context(backend, [object()], 0)
+    assert result == {
+        "ordinal": 0,
+        "egl_identity": {"vendor": "Mesa Project", "version": "1.5"},
+        "gl_identity": {"vendor": "Mesa/X.org", "renderer": "llvmpipe", "version": "3.1"},
+        "cleanup": {
+            "status": "PASS",
+            "clear_current": {"attempted": True, "success": True, "error": None},
+            "destroy_context": {"attempted": True, "success": True, "error": None},
+            "terminate": {"attempted": True, "success": True, "error": None},
+            "release_thread": {"attempted": True, "success": True, "error": None},
+        },
+    }
+    assert backend.events == [
+        "display", "initialize", "choose_config", "bind_api", "create_context",
+        "make_current", "read_egl", "read_gl", "clear_current", "destroy_context",
+        "terminate", "release_thread",
+    ]
+
+
+def test_private_device_context_rejects_invalid_ordinal_before_backend_calls() -> None:
+    admission = _module()
+    backend = _ContextBackend()
+    with pytest.raises(admission.AdmissionError, match="ordinal|range"):
+        admission.probe_device_context(backend, [object()], 1)
+    assert backend.events == []
+
+
+@pytest.mark.parametrize(
+    "failed_stage, expected_cleanup",
+    [
+        ("display", ["release_thread"]),
+        ("initialize", ["terminate", "release_thread"]),
+        ("choose_config", ["terminate", "release_thread"]),
+        ("bind_api", ["terminate", "release_thread"]),
+        ("create_context", ["terminate", "release_thread"]),
+        ("make_current", ["clear_current", "destroy_context", "terminate", "release_thread"]),
+        ("read_egl", ["clear_current", "destroy_context", "terminate", "release_thread"]),
+        ("read_gl", ["clear_current", "destroy_context", "terminate", "release_thread"]),
+    ],
+)
+def test_private_context_failure_attempts_every_applicable_cleanup(failed_stage, expected_cleanup) -> None:
+    admission = _module()
+    backend = _ContextBackend(fail=failed_stage)
+    with pytest.raises(admission.AdmissionError, match=failed_stage) as caught:
+        admission.probe_device_context(backend, [object()], 0)
+    assert backend.events[-len(expected_cleanup):] == expected_cleanup
+    assert caught.value.cleanup["status"] == "FAIL"
+    assert all(caught.value.cleanup[name]["attempted"] for name in expected_cleanup)
+    assert "object at 0x" not in str(caught.value)
+
+
+def test_private_context_preserves_primary_and_all_cleanup_failures() -> None:
+    admission = _module()
+    backend = _ContextBackend(
+        fail="read_gl",
+        cleanup_fail={"clear_current", "destroy_context", "terminate", "release_thread"},
+    )
+    with pytest.raises(admission.AdmissionError, match="read_gl") as caught:
+        admission.probe_device_context(backend, [object()], 0)
+    assert backend.events[-4:] == [
+        "clear_current", "destroy_context", "terminate", "release_thread"
+    ]
+    assert caught.value.cleanup["status"] == "FAIL"
+    for name in ("clear_current", "destroy_context", "terminate", "release_thread"):
+        assert caught.value.cleanup[name] == {
+            "attempted": True,
+            "success": False,
+            "error": {"type": "RuntimeError", "message": f"{name} failed"},
+        }
+
+
+def test_private_context_elides_pointer_repr_from_primary_and_cleanup_errors() -> None:
+    admission = _module()
+
+    class _PointerFailureBackend(_ContextBackend):
+        def query_gl_identity(self):
+            self.events.append("read_gl")
+            raise RuntimeError("driver returned object at 0x1234")
+
+    backend = _PointerFailureBackend()
+    with pytest.raises(admission.AdmissionError, match="read_gl") as caught:
+        admission.probe_device_context(backend, [object()], 0)
+    assert "0x" not in str(caught.value)
+    assert "0x" not in repr(caught.value.cleanup)
+    assert caught.value.cleanup["status"] == "FAIL"
+    assert caught.value.cleanup["release_thread"]["success"] is True
+
+
+@pytest.mark.parametrize("value", [None, [], "not-a-mapping"])
+def test_fingerprint_validators_wrap_malformed_top_level_payloads(value) -> None:
+    admission = _module()
+    with pytest.raises(admission.AdmissionError):
+        admission.worker_preimport_namespace_fingerprint_sha256(value)
+    with pytest.raises(admission.AdmissionError):
+        admission.admission_full_renderer_fingerprint_sha256(value)
 
 
 def test_full_and_worker_fingerprints_have_disjoint_context_schemas() -> None:
