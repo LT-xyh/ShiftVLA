@@ -2,6 +2,52 @@
 
 ## Status and scope
 
+### Approved passive-import clarification (2026-09-09)
+
+The user explicitly approved a narrow exception to the processor import
+prohibition below. The official `LiberoEnv` factory may passively import only
+processor-related modules required by its audited dependency graph and named
+individually in a frozen exact-module allowlist. No wildcard or prefix grants
+import permission. A new or unexpected related module fails closed before
+execution until separately reviewed; the runtime never learns or expands the
+allowlist automatically.
+
+This exception permits imports only. Processor instances, pipeline creation,
+processor calls (including `__call__`), pre/postprocessing, policy or SmolVLA
+loading/invocation, checkpoint loading, model/tokenizer/processor instance
+creation, Hub/network fallback, and action generation remain prohibited.
+Class definitions, type declarations, and the audited registration decorators
+needed to import the official modules are passive module initialization, not
+permission to instantiate or execute the registered classes.
+
+The exact related-module closure will bind each installed source path and raw
+SHA-256, its dependency provenance, and the audit entrypoint. An isolated
+import-only audit verifies the static source-derived candidate set under
+runtime guards; it does not construct an environment, create an EGL context,
+render, or write to either empirical output root. Any newly encountered module
+is rejected and must be source-reviewed before a draft audit can be repeated.
+Only the exact successfully audited set is frozen for later execution.
+
+Runtime guards must be installed before official factory imports and remain
+active through cleanup. Evidence must separately report the exact allowlisted
+passive imports, guard installation/restoration, zero processor instances,
+pipeline creations and calls, zero policy imports/calls, zero checkpoint/model
+loads, zero tokenizer/model instances, and zero Hub/network accesses. A blocked
+attempt must remain visible even if application code catches its exception;
+zero counters cannot be substituted for missing instrumentation. Source/hash
+drift and pre-existing related modules invalidate a fresh-child audit.
+
+Use a dedicated `scripts/m1_import_guard.py` with focused tests to keep this
+cross-cutting boundary separate from the existing EGL adapter. The existing
+admission module will verify the frozen contract and include its evidence in
+the single-render worker record. No third-party sources or old bundle change.
+
+This is a clarification of policy-free construction, not permission to use
+the processor stack. Implementation and review must finish before any real
+preflight or new M1-N0 schedule. Independent reviewer unavailability is recorded
+as unavailable, never PASS; the user authorized the main agent to perform the
+implementation checkpoint review without indefinite reviewer restarts.
+
 This design covers only `M1-N0-R1 — Renderer Device Re-registration` and the
 single replacement M1-N0 null-calibration attempt that it may admit.  It does
 not change `ReplayState`, execute source-vs-restored replay, or begin
