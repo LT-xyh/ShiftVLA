@@ -164,3 +164,31 @@ Only the admission script, its tests, and this review note are in scope for
 the checkpoint commit. `AGENTS.md`, M0 evidence, and unrelated untracked
 artifacts remain excluded. The resulting commit is a backend checkpoint,
 not the final admission execution source identity `P`.
+
+### Source-level preflight contract conflict
+
+The subsequent main-agent source audit (no runtime imports or environment
+construction) found a separate technical issue, unrelated to reviewer
+availability. The approved `scripts/dcu_preflight.py` factory imports
+`lerobot.envs` at lines 2262-2267. In the actual pinned CPU site-packages,
+`lerobot/envs/__init__.py:21` imports `.configs`, and
+`lerobot/envs/configs.py:27` unconditionally imports `lerobot.processor`.
+The design's forbidden list explicitly prohibits processor **imports/calls**
+(`docs/superpowers/specs/2026-09-08-m1-n0-r1-renderer-reregistration-design.md:261`).
+Thus successful official factory construction cannot also provide a truthful
+zero-processor-import audit under the current definition.
+
+Read-only source SHA-256 evidence, relative to
+`/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/`:
+
+- `lerobot/envs/__init__.py`: `744b8993c1442bb96d81734039c6a53db718bf6d790b1cfed2d7b0d8a034f3fc`
+- `lerobot/envs/configs.py`: `e2a6df1d26875f8f5b4c195867b8ed0fe5f3454ec5ccb3341582f2e1ebc98aa1`
+- `lerobot/processor/__init__.py`: `70863c9d39c35aa3748bc558881d895a6c1af61f7e5bc2f2464cc3b0624e92bb`
+
+No dependency, factory, import audit, or scientific contract was changed to
+bypass this conflict. Explicit user direction is required before distinguishing
+an audited allowlist of incidental processor-module imports from forbidden
+processor construction/calls. Until resolved and the missing execution path
+is implemented and committed, the real preflight remains NOT RUN and no new
+schedule is created. The committed backend checkpoint is
+`b92f1370e2f2afd5eba6d6d4cfe5a96cffa98d66`; it is not execution identity `P`.
