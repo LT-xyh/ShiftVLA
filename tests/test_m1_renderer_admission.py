@@ -190,6 +190,10 @@ def test_governed_environment_transition_is_ordered_and_import_is_last() -> None
     assert events.index("block_loader") < events.index("set_cache")
     assert events.index("set_cache") < events.index("set_renderer")
     assert events.index("set_renderer") < events.index("verify_final_mapping")
+    assert events[:7] == [
+        "record_presence", "unset", "block_loader", "set_cache",
+        "set_renderer", "verify_final_mapping", "renderer_import",
+    ]
     assert events[-1] == "import"
     assert "CUDA_VISIBLE_DEVICES" not in environment
     assert environment["MUJOCO_GL"] == "egl"
@@ -197,6 +201,26 @@ def test_governed_environment_transition_is_ordered_and_import_is_last() -> None
     assert environment["MUJOCO_EGL_DEVICE_ID"] == "0"
     assert environment["UNRELATED_USER_VALUE"] == "preserved"
     assert result["final_environment"]["MUJOCO_EGL_DEVICE_ID"] == "0"
+    assert result["final_environment"]["LD_PRELOAD"] is None
+    assert "LD_PRELOAD" not in environment
+
+
+def test_governed_environment_without_import_callback_does_not_claim_renderer_import() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    environment = {
+        "LD_PRELOAD": "",
+        "LD_AUDIT": "",
+        "LD_LIBRARY_PATH": config["governed_environment"]["admitted_ld_library_path"],
+    }
+    events: list[str] = []
+    admission.apply_governed_environment(config, environ=environment, event_sink=events.append)
+    assert events == [
+        "record_presence", "unset", "block_loader", "set_cache",
+        "set_renderer", "verify_final_mapping",
+    ]
+    assert "LD_PRELOAD" not in environment
+    assert "LD_AUDIT" not in environment
 
 
 def test_governed_environment_schema_is_exact() -> None:
@@ -271,13 +295,6 @@ def test_renderer_fingerprint_hashes_are_explicit_and_worker_schema_is_context_f
     governed_values.update(governed["set_cache"])
     governed_values.update(governed["set_renderer"])
     governed_values["LD_LIBRARY_PATH"] = governed["admitted_ld_library_path"]
-    full = {
-        "device_count": 1,
-        "selected_ordinal": 0,
-        "renderer_identity": {"vendor": "Mesa/X.org", "renderer": "llvmpipe"},
-        "context_derived": {"gl_version": "3.1"},
-        "loaded_graphics_libraries": [{"path": "/lib/libEGL.so", "sha256": "a" * 64}],
-    }
     worker = {
         "schema_version": 1,
         "device_count": 1,
@@ -303,6 +320,17 @@ def test_renderer_fingerprint_hashes_are_explicit_and_worker_schema_is_context_f
             "package_version": "1.0",
         }],
     }
+    full = {
+        **worker,
+        "egl_identity": {"vendor": "Mesa Project", "version": "1.5"},
+        "gl_identity": {"vendor": "Mesa/X.org", "renderer": "llvmpipe", "version": "3.1"},
+        "loaded_graphics_libraries": [{
+            "path": "/lib/libEGL.so",
+            "sha256": "a" * 64,
+            "build_id": "deadbeef",
+            "package_version": "1.0",
+        }],
+    }
     full_hash = admission.admission_full_renderer_fingerprint_sha256(full)
     worker_hash = admission.worker_preimport_namespace_fingerprint_sha256(worker)
     assert full_hash == admission.admission_full_renderer_fingerprint_sha256(copy.deepcopy(full))
@@ -317,6 +345,499 @@ def test_renderer_fingerprint_hashes_are_explicit_and_worker_schema_is_context_f
         admission.worker_preimport_namespace_fingerprint_sha256(
             {**worker, "ordered_descriptors": [{**worker["ordered_descriptors"][0], "name": "software"}]}
         )
+
+
+class _FakeEGLBackend:
+    EGL_TRUE = 1
+    EGL_FALSE = 0
+    EGL_SUCCESS = 0x3000
+    EGL_BAD_ALLOC = 0x3003
+    EGL_EXTENSIONS = "EGL_EXTENSIONS"
+    EGL_DRM_DEVICE_FILE_EXT = "EGL_DRM_DEVICE_FILE_EXT"
+    EGL_DRM_RENDER_NODE_FILE_EXT = "EGL_DRM_RENDER_NODE_FILE_EXT"
+    EGL_NO_DEVICE_EXT = object()
+
+    def __init__(
+        self,
+        *,
+        extensions=None,
+        query_results=None,
+        query_errors=None,
+        reported_counts=None,
+    ):
+        self.handles = [object(), object()]
+        self.extensions = extensions if extensions is not None else [
+            [
+                "EGL_EXT_device_drm_render_node",
+                "EGL_EXT_device_drm",
+                "EGL_EXT_device_base",
+                "EGL_EXT_device_drm",
+            ],
+            ["EGL_EXT_device_base"],
+        ]
+        self.query_results = list(query_results or [self.EGL_TRUE, self.EGL_TRUE])
+        self.query_errors = list(query_errors or [self.EGL_SUCCESS, self.EGL_SUCCESS])
+        self.reported_counts = list(reported_counts or [len(self.handles), len(self.handles)])
+        self.query_calls = []
+        self.error_calls = 0
+        self.extension_calls = []
+        self.drm_calls = []
+
+    def eglQueryDevicesEXT(self, capacity, devices, count):
+        call_index = len(self.query_calls)
+        self.query_calls.append((capacity, devices is None, len(devices) if devices is not None else None))
+        count[0] = self.reported_counts[call_index]
+        if capacity:
+            for index, handle in enumerate(self.handles[:capacity]):
+                devices[index] = handle
+        return self.query_results[call_index]
+
+    def eglGetError(self):
+        error = self.query_errors[self.error_calls]
+        self.error_calls += 1
+        return error
+
+    def is_no_device(self, handle):
+        return handle is self.EGL_NO_DEVICE_EXT or getattr(handle, "value", 1) == 0
+
+    def query_device_extensions(self, handle):
+        self.extension_calls.append(handle)
+        return self.extensions[self.handles.index(handle)]
+
+    def query_device_drm_node(self, handle, field):
+        self.drm_calls.append((handle, field))
+        return {
+            "drm_device_file": "/dev/dri/card0",
+            "drm_render_node_file": "/dev/dri/renderD128",
+        }[field]
+
+def _fake_worker_payload(admission, config, *, device_count=1, selected_ordinal=0):
+    governed = config["governed_environment"]
+    names = (
+        set(governed["unset_before_import"])
+        | set(governed["blocked_nonempty"])
+        | set(governed["set_cache"])
+        | set(governed["set_renderer"])
+        | {"LD_LIBRARY_PATH"}
+    )
+    environment = {name: None for name in names}
+    environment.update(governed["set_cache"])
+    environment.update(governed["set_renderer"])
+    environment["LD_LIBRARY_PATH"] = governed["admitted_ld_library_path"]
+    return {
+        "schema_version": 1,
+        "device_count": device_count,
+        "selected_ordinal": selected_ordinal,
+        "ordered_descriptors": [{
+            "ordinal": index,
+            "extensions": ["EGL_EXT_device_base"],
+            "drm_device_file": None,
+            "drm_render_node_file": None,
+        } for index in range(device_count)],
+        "supported_drm_nodes": [],
+        "namespace_facts": {
+            "dev_dri": [],
+            "mount_namespace": "mnt:[4026531840]",
+            "cgroup": ["0::/"],
+            "device_nodes": [],
+        },
+        "governed_environment": environment,
+        "static_graphics_libraries": [{
+            "path": "/lib/libEGL.so.1",
+            "sha256": "a" * 64,
+            "build_id": "build-egl",
+            "package_version": "mesa-21.1.5",
+        }],
+    }
+
+
+def _fake_environment_transition_audit(config, worker):
+    governed = config["governed_environment"]
+    names = (
+        set(governed["unset_before_import"])
+        | set(governed["blocked_nonempty"])
+        | set(governed["set_cache"])
+        | set(governed["set_renderer"])
+        | {"LD_LIBRARY_PATH"}
+    )
+    initial = {
+        name: {"present": False, "nonempty": False}
+        for name in sorted(names)
+    }
+    initial["LD_LIBRARY_PATH"] = {"present": True, "nonempty": True}
+    return {
+        "events": [
+            "record_presence", "unset", "block_loader", "set_cache",
+            "set_renderer", "verify_final_mapping", "renderer_import",
+        ],
+        "initial_presence": initial,
+        "final_environment": worker["governed_environment"],
+        "renderer_modules_before": [],
+        "renderer_modules_after": ["mujoco.egl.egl_ext"],
+    }
+
+
+def _valid_probe_records(admission, config):
+    worker = _fake_worker_payload(admission, config)
+    worker["ordered_descriptors"][0]["extensions"] = ["EGL_MESA_device_software"]
+    worker = admission.build_worker_preimport_fingerprint(
+        device_count=1,
+        selected_ordinal=0,
+        ordered_descriptors=worker["ordered_descriptors"],
+        namespace_facts=worker["namespace_facts"],
+        governed_environment=worker["governed_environment"],
+        static_graphics_libraries=worker["static_graphics_libraries"],
+    )
+    full = admission.build_full_renderer_fingerprint(
+        worker,
+        egl_identity={"vendor": "Mesa Project", "version": "1.5"},
+        gl_identity={
+            "vendor": "Mesa/X.org",
+            "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+            "version": "3.1 Mesa 21.1.5",
+        },
+        loaded_libs=worker["static_graphics_libraries"],
+    )
+    source_sha = admission.probe_source_bindings_sha256(config["probe_contract"]["source_files"])
+    return [
+        admission.build_renderer_probe_record(
+            index=index,
+            pid=1000 + index,
+            ppid=999,
+            worker_preimport_fingerprint=worker,
+            full_renderer_fingerprint=full,
+            environment_transition_audit=_fake_environment_transition_audit(config, worker),
+            config_sha256=config["config_sha256"],
+            runtime_lock_sha256=config["runtime"]["runtime_lock"]["sha256"],
+            probe_source_bindings_sha256=source_sha,
+            execution_commit="a" * 40,
+            context_records=[{
+                "ordinal": 0,
+                "egl_identity": full["egl_identity"],
+                "gl_identity": full["gl_identity"],
+                "loaded_graphics_libraries": full["loaded_graphics_libraries"],
+            }],
+            required_selected_extensions=["EGL_MESA_device_software"],
+            import_negative={
+                "policy_imported": False,
+                "processor_imported": False,
+                "libero_imported": False,
+                "forbidden_modules": [],
+            },
+            cleanup={
+                "status": "PASS",
+                "all_contexts_released": True,
+                "partial_paths_cleaned": True,
+                "egl_thread_released": True,
+            },
+        )
+        for index in range(3)
+    ]
+
+
+def _rehash_probe_payload(admission, record):
+    worker = record["worker_preimport_fingerprint"]
+    full = record["full_renderer_fingerprint"]
+    worker_keys = {
+        "schema_version", "device_count", "selected_ordinal", "ordered_descriptors",
+        "supported_drm_nodes", "namespace_facts", "governed_environment",
+        "static_graphics_libraries",
+    }
+    for key in worker_keys:
+        full[key] = copy.deepcopy(worker[key])
+    record["device_count"] = worker["device_count"]
+    record["selected_ordinal"] = worker["selected_ordinal"]
+    record["ordered_descriptors"] = copy.deepcopy(worker["ordered_descriptors"])
+    record["worker_preimport_fingerprint_sha256"] = admission.worker_preimport_namespace_fingerprint_sha256(worker)
+    record["full_renderer_fingerprint_sha256"] = admission.admission_full_renderer_fingerprint_sha256(full)
+    record["environment_transition_audit"]["final_environment"] = copy.deepcopy(worker["governed_environment"])
+
+
+def test_checked_egl_query_uses_capacity_zero_then_exact_count_without_fixed_max() -> None:
+    admission = _module()
+    backend = _FakeEGLBackend()
+    devices = admission.query_egl_devices_two_call(backend)
+    assert len(devices) == 2
+    assert backend.query_calls == [(0, True, None), (2, False, 2)]
+    assert backend.error_calls == 2
+
+
+def test_checked_egl_query_has_no_fixed_ten_device_limit() -> None:
+    admission = _module()
+    backend = _FakeEGLBackend()
+    backend.handles = [object() for _ in range(17)]
+    backend.reported_counts = [17, 17]
+    devices = admission.query_egl_devices_two_call(backend)
+    assert len(devices) == 17
+    assert backend.query_calls == [(0, True, None), (17, False, 17)]
+
+
+def test_checked_egl_query_rejects_no_device_sentinel() -> None:
+    admission = _module()
+    backend = _FakeEGLBackend()
+    backend.handles[1] = backend.EGL_NO_DEVICE_EXT
+    with pytest.raises(admission.AdmissionError, match="NO_DEVICE|sentinel"):
+        admission.query_egl_devices_two_call(backend)
+
+
+def test_checked_egl_query_uses_backend_semantic_no_device_predicate() -> None:
+    admission = _module()
+    backend = _FakeEGLBackend()
+
+    class EquivalentNullHandle:
+        value = 0
+
+    backend.handles[1] = EquivalentNullHandle()
+    assert backend.handles[1] is not backend.EGL_NO_DEVICE_EXT
+    with pytest.raises(admission.AdmissionError, match="NO_DEVICE|sentinel"):
+        admission.query_egl_devices_two_call(backend)
+
+
+def test_checked_egl_query_rejects_an_unfilled_exact_buffer() -> None:
+    admission = _module()
+    backend = _FakeEGLBackend()
+    backend.handles = [object()]
+    backend.reported_counts = [2, 2]
+    with pytest.raises(admission.AdmissionError, match="fill|buffer"):
+        admission.query_egl_devices_two_call(backend)
+
+
+@pytest.mark.parametrize(
+    "query_results, query_errors",
+    [
+        ([0, 1], [0x3000, 0x3000]),
+        ([1, 0], [0x3000, 0x3000]),
+        ([1, 1], [0x3003, 0x3000]),
+        ([1, 1], [0x3000, 0x3003]),
+    ],
+)
+def test_checked_egl_query_gates_each_boolean_and_egl_error(query_results, query_errors) -> None:
+    admission = _module()
+    backend = _FakeEGLBackend(query_results=query_results, query_errors=query_errors)
+    with pytest.raises(admission.AdmissionError, match="eglQueryDevicesEXT|EGL"):
+        admission.query_egl_devices_two_call(backend)
+
+
+@pytest.mark.parametrize("reported_counts", [[0, 0], [-1, -1], [2, 1], [2, 3]])
+def test_checked_egl_query_requires_positive_and_exact_second_count(reported_counts) -> None:
+    admission = _module()
+    backend = _FakeEGLBackend(reported_counts=reported_counts)
+    with pytest.raises(admission.AdmissionError, match="count"):
+        admission.query_egl_devices_two_call(backend)
+
+
+def test_descriptors_are_ordered_and_query_drm_only_when_extension_is_supported() -> None:
+    admission = _module()
+    backend = _FakeEGLBackend()
+    devices = admission.query_egl_devices_two_call(backend)
+    descriptors = admission.describe_egl_devices(backend, devices)
+    assert [item["ordinal"] for item in descriptors] == [0, 1]
+    assert descriptors[0]["drm_device_file"] == "/dev/dri/card0"
+    assert descriptors[1]["drm_device_file"] is None
+    assert descriptors[0]["extensions"] == [
+        "EGL_EXT_device_base", "EGL_EXT_device_drm", "EGL_EXT_device_drm_render_node"
+    ]
+    assert backend.drm_calls == [
+        (devices[0], "drm_device_file"),
+        (devices[0], "drm_render_node_file"),
+    ]
+    assert all(set(item) == {
+        "ordinal", "extensions", "drm_device_file", "drm_render_node_file"
+    } for item in descriptors)
+    assert all(
+        isinstance(value, (str, int, type(None), list))
+        for item in descriptors
+        for value in item.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "extensions, expected_primary, expected_render, expected_fields",
+    [
+        (["EGL_EXT_device_drm"], "/dev/dri/card0", None, ["drm_device_file"]),
+        (["EGL_EXT_device_drm_render_node"], None, "/dev/dri/renderD128", ["drm_render_node_file"]),
+        (["EGL_EXT_device_base"], None, None, []),
+    ],
+)
+def test_descriptor_drm_fields_have_independent_extension_gates(
+    extensions, expected_primary, expected_render, expected_fields
+) -> None:
+    admission = _module()
+    backend = _FakeEGLBackend(extensions=[extensions, ["EGL_EXT_device_base"]])
+    devices = admission.query_egl_devices_two_call(backend)
+    descriptor = admission.describe_egl_devices(backend, devices)[0]
+    assert descriptor["drm_device_file"] == expected_primary
+    assert descriptor["drm_render_node_file"] == expected_render
+    assert [field for _handle, field in backend.drm_calls] == expected_fields
+
+
+def test_full_and_worker_fingerprints_have_disjoint_context_schemas() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    worker = _fake_worker_payload(admission, config)
+    built_worker = admission.build_worker_preimport_fingerprint(
+        device_count=worker["device_count"],
+        selected_ordinal=worker["selected_ordinal"],
+        ordered_descriptors=worker["ordered_descriptors"],
+        namespace_facts=worker["namespace_facts"],
+        governed_environment=worker["governed_environment"],
+        static_graphics_libraries=worker["static_graphics_libraries"],
+    )
+    full = admission.build_full_renderer_fingerprint(
+        built_worker,
+        egl_identity={"vendor": "Mesa Project", "version": "1.5"},
+        gl_identity={"vendor": "Mesa/X.org", "renderer": "llvmpipe", "version": "3.1"},
+        loaded_libs=[{"path": "/lib/libEGL.so.1", "sha256": "a" * 64,
+                      "build_id": "b", "package_version": "v"}],
+    )
+    worker_hash = admission.worker_preimport_namespace_fingerprint_sha256(built_worker)
+    full_hash = admission.admission_full_renderer_fingerprint_sha256(full)
+    assert worker_hash != full_hash
+    assert admission.worker_preimport_namespace_fingerprint_sha256(built_worker) == worker_hash
+    with pytest.raises(admission.AdmissionError, match="context|GL|loaded"):
+        admission.worker_preimport_namespace_fingerprint_sha256(
+            {**built_worker, "egl_identity": {"vendor": "Mesa"}}
+        )
+    assert set(full) == {
+        *built_worker, "egl_identity", "gl_identity", "loaded_graphics_libraries",
+    }
+    assert all(name not in full for name in ("pid", "timestamp", "address", "pointer"))
+    assert admission.admission_full_renderer_fingerprint_sha256(copy.deepcopy(full)) == full_hash
+
+    with pytest.raises(admission.AdmissionError, match="schema|field|volatile"):
+        admission.admission_full_renderer_fingerprint_sha256({**full, "pid": 123})
+
+
+def test_worker_builder_normalizes_only_set_like_fields_and_rejects_pointer_values() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    worker = _fake_worker_payload(admission, config, device_count=2)
+    worker["ordered_descriptors"] = [
+        {
+            "ordinal": 0,
+            "extensions": [
+                "z", "EGL_EXT_device_drm_render_node", "EGL_EXT_device_drm", "a", "z"
+            ],
+            "drm_device_file": "/dev/dri/card0",
+            "drm_render_node_file": "/dev/dri/renderD128",
+        },
+        {
+            "ordinal": 1,
+            "extensions": ["b"],
+            "drm_device_file": None,
+            "drm_render_node_file": None,
+        },
+    ]
+    worker["static_graphics_libraries"] = [
+        {"path": "/lib/z.so", "sha256": "b" * 64, "build_id": None, "package_version": None},
+        {"path": "/lib/a.so", "sha256": "a" * 64, "build_id": "id", "package_version": "1"},
+    ]
+    built = admission.build_worker_preimport_fingerprint(
+        device_count=2,
+        selected_ordinal=0,
+        ordered_descriptors=worker["ordered_descriptors"],
+        namespace_facts=worker["namespace_facts"],
+        governed_environment=worker["governed_environment"],
+        static_graphics_libraries=worker["static_graphics_libraries"],
+    )
+    assert [item["ordinal"] for item in built["ordered_descriptors"]] == [0, 1]
+    assert built["ordered_descriptors"][0]["extensions"] == [
+        "EGL_EXT_device_drm", "EGL_EXT_device_drm_render_node", "a", "z"
+    ]
+    assert built["supported_drm_nodes"] == ["/dev/dri/card0", "/dev/dri/renderD128"]
+    assert [item["path"] for item in built["static_graphics_libraries"]] == ["/lib/a.so", "/lib/z.so"]
+    assert admission.worker_preimport_namespace_fingerprint_sha256(built)
+    noncanonical = copy.deepcopy(built)
+    noncanonical["static_graphics_libraries"].reverse()
+    with pytest.raises(admission.AdmissionError, match="sorted|unique|canonical"):
+        admission.worker_preimport_namespace_fingerprint_sha256(noncanonical)
+
+    pointer_descriptor = copy.deepcopy(worker["ordered_descriptors"])
+    pointer_descriptor[0]["drm_device_file"] = object()
+    with pytest.raises(admission.AdmissionError, match="scalar|pointer|DRM"):
+        admission.build_worker_preimport_fingerprint(
+            device_count=2,
+            selected_ordinal=0,
+            ordered_descriptors=pointer_descriptor,
+            namespace_facts=worker["namespace_facts"],
+            governed_environment=worker["governed_environment"],
+            static_graphics_libraries=worker["static_graphics_libraries"],
+        )
+
+    unsupported_drm = copy.deepcopy(worker["ordered_descriptors"])
+    unsupported_drm[0]["extensions"] = ["EGL_EXT_device_base"]
+    with pytest.raises(admission.AdmissionError, match="extension|DRM"):
+        admission.build_worker_preimport_fingerprint(
+            device_count=2,
+            selected_ordinal=0,
+            ordered_descriptors=unsupported_drm,
+            namespace_facts=worker["namespace_facts"],
+            governed_environment=worker["governed_environment"],
+            static_graphics_libraries=worker["static_graphics_libraries"],
+        )
+
+    missing_render_extension = copy.deepcopy(worker["ordered_descriptors"])
+    missing_render_extension[0]["extensions"] = ["EGL_EXT_device_drm"]
+    with pytest.raises(admission.AdmissionError, match="render|extension|DRM"):
+        admission.build_worker_preimport_fingerprint(
+            device_count=2,
+            selected_ordinal=0,
+            ordered_descriptors=missing_render_extension,
+            namespace_facts=worker["namespace_facts"],
+            governed_environment=worker["governed_environment"],
+            static_graphics_libraries=worker["static_graphics_libraries"],
+        )
+
+    invalid_extension = copy.deepcopy(worker["ordered_descriptors"])
+    invalid_extension[0]["extensions"] = ["valid", object()]
+    with pytest.raises(admission.AdmissionError, match="extension|scalar|string"):
+        admission.build_worker_preimport_fingerprint(
+            device_count=2,
+            selected_ordinal=0,
+            ordered_descriptors=invalid_extension,
+            namespace_facts=worker["namespace_facts"],
+            governed_environment=worker["governed_environment"],
+            static_graphics_libraries=worker["static_graphics_libraries"],
+        )
+
+
+def test_library_set_rejects_duplicate_path_conflicts() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    worker = _fake_worker_payload(admission, config)
+    libraries = worker["static_graphics_libraries"] * 2
+    libraries[1] = {**libraries[1], "sha256": "b" * 64}
+    with pytest.raises(admission.AdmissionError, match="duplicate|conflict"):
+        admission.build_worker_preimport_fingerprint(
+            device_count=1,
+            selected_ordinal=0,
+            ordered_descriptors=worker["ordered_descriptors"],
+            namespace_facts=worker["namespace_facts"],
+            governed_environment=worker["governed_environment"],
+            static_graphics_libraries=libraries,
+        )
+
+
+@pytest.mark.parametrize(
+    "supported_nodes",
+    [
+        ["/dev/dri/card0"],
+        ["/dev/dri/card0", "/dev/dri/renderD128", "/dev/dri/renderD129"],
+    ],
+)
+def test_worker_hash_rejects_forged_supported_drm_node_union(supported_nodes) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    worker = _fake_worker_payload(admission, config)
+    worker["ordered_descriptors"][0] = {
+        "ordinal": 0,
+        "extensions": ["EGL_EXT_device_drm", "EGL_EXT_device_drm_render_node"],
+        "drm_device_file": "/dev/dri/card0",
+        "drm_render_node_file": "/dev/dri/renderD128",
+    }
+    worker["supported_drm_nodes"] = supported_nodes
+    with pytest.raises(admission.AdmissionError, match="DRM|union|descriptor"):
+        admission.worker_preimport_namespace_fingerprint_sha256(worker)
 
 
 @pytest.mark.parametrize(
@@ -539,3 +1060,374 @@ def test_exact_tree_and_empty_cache_reject_extra_entries(tmp_path: Path) -> None
     (cache / "unexpected").write_bytes(b"x")
     with pytest.raises(admission.ProvenanceError, match="empty"):
         admission.verify_empty_directory(cache)
+
+
+def test_probe_contract_freezes_three_children_and_renderer_source_bindings() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    contract = config["probe_contract"]
+    assert contract == {
+        "schema_version": 1,
+        "probe_count": 3,
+        "expected_device_count": 1,
+        "selected_ordinal": 0,
+        "required_selected_extensions": ["EGL_MESA_device_software"],
+        "expected_egl_identity": {"vendor": "Mesa Project", "version": "1.5"},
+        "expected_gl_identity": {
+            "vendor": "Mesa/X.org",
+            "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+            "version": "3.1 Mesa 21.1.5",
+        },
+        "source_files": {
+            "mujoco_egl_ext": {
+                "path": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/mujoco/egl/egl_ext.py",
+                "sha256": "d3d261c51070482ca749efe14ccb5deb56c6abaf180092f20c8b954a6fa7ed05",
+            },
+            "robosuite_egl_context": {
+                "path": "external/robosuite/robosuite/renderers/context/egl_context.py",
+                "sha256": "0919f2232ac4eccde2a1a2e1986b623a99fea109fa86a318cab04537150def49",
+            },
+            "robosuite_egl_context_installed": {
+                "path": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/renderers/context/egl_context.py",
+                "sha256": "0919f2232ac4eccde2a1a2e1986b623a99fea109fa86a318cab04537150def49",
+            },
+            "pyopengl_egl": {
+                "path": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/EGL/__init__.py",
+                "sha256": "13979115c0873667997e8ba58b985dca3f4f3bb3f5b68c89ce58f4e5505ad7fd",
+            },
+            "pyopengl_error": {
+                "path": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/error.py",
+                "sha256": "409e1416a583409dbe99fcb78fce96e6ed0fcdfd82fa3492345692efd8e81e86",
+            },
+        },
+    }
+    assert admission.verify_admission_probe_contract(contract, repo_root=ROOT)
+
+
+def test_probe_record_builder_and_three_child_verifier_require_exact_payloads() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    governed = config["governed_environment"]
+    worker = _fake_worker_payload(admission, config)
+    worker["ordered_descriptors"][0]["extensions"] = ["EGL_MESA_device_software"]
+    worker = admission.build_worker_preimport_fingerprint(
+        device_count=1,
+        selected_ordinal=0,
+        ordered_descriptors=worker["ordered_descriptors"],
+        namespace_facts=worker["namespace_facts"],
+        governed_environment=worker["governed_environment"],
+        static_graphics_libraries=worker["static_graphics_libraries"],
+    )
+    full = admission.build_full_renderer_fingerprint(
+        worker,
+        egl_identity={"vendor": "Mesa Project", "version": "1.5"},
+        gl_identity={
+            "vendor": "Mesa/X.org",
+            "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+            "version": "3.1 Mesa 21.1.5",
+        },
+        loaded_libs=worker["static_graphics_libraries"],
+    )
+    records = [
+        admission.build_renderer_probe_record(
+            index=index,
+            pid=1000 + index,
+            ppid=999,
+            worker_preimport_fingerprint=worker,
+            full_renderer_fingerprint=full,
+            environment_transition_audit=_fake_environment_transition_audit(config, worker),
+            config_sha256=config["config_sha256"],
+            runtime_lock_sha256=config["runtime"]["runtime_lock"]["sha256"],
+            probe_source_bindings_sha256=admission.probe_source_bindings_sha256(
+                config["probe_contract"]["source_files"]
+            ),
+            execution_commit="a" * 40,
+            context_records=[{
+                "ordinal": 0,
+                "egl_identity": full["egl_identity"],
+                "gl_identity": full["gl_identity"],
+                "loaded_graphics_libraries": full["loaded_graphics_libraries"],
+            }],
+            required_selected_extensions=["EGL_MESA_device_software"],
+            import_negative={
+                "policy_imported": False,
+                "processor_imported": False,
+                "libero_imported": False,
+                "forbidden_modules": [],
+            },
+            cleanup={
+                "status": "PASS",
+                "all_contexts_released": True,
+                "partial_paths_cleaned": True,
+                "egl_thread_released": True,
+            },
+        )
+        for index in range(3)
+    ]
+    assert admission.verify_three_probe_records(
+        records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+        repo_root=ROOT,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda r: r[0].update(index="001"), "index"),
+        (lambda r: r[1].update(pid=r[0]["pid"]), "PID"),
+        (lambda r: r[1].update(ppid=123), "PPID"),
+        (lambda r: r[0].update(evidence_role="null_calibration"), "evidence"),
+        (lambda r: r[0].update(included_in_null_calibration_evidence=True), "null"),
+        (lambda r: r[0].update(exit_code=1), "exit"),
+        (lambda r: r[0].update(retry_count=1), "retry"),
+        (lambda r: r[0].update(fallback_used=True), "fallback"),
+        (lambda r: r[0]["import_negative"].update(policy_imported=True), "policy"),
+        (lambda r: r[0]["cleanup"].update(status="FAIL"), "cleanup"),
+        (lambda r: r[0]["worker_preimport_fingerprint"].update(device_count=2), "device"),
+        (lambda r: r[0]["full_renderer_fingerprint"]["gl_identity"].update(renderer="other"), "GL"),
+        (lambda r: r[0].update(full_renderer_fingerprint_sha256="0" * 64), "hash"),
+    ],
+)
+def test_three_child_verifier_rejects_identity_and_protocol_drift(mutation, message) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    worker = _fake_worker_payload(admission, config)
+    worker["ordered_descriptors"][0]["extensions"] = ["EGL_MESA_device_software"]
+    worker = admission.build_worker_preimport_fingerprint(
+        device_count=1,
+        selected_ordinal=0,
+        ordered_descriptors=worker["ordered_descriptors"],
+        namespace_facts=worker["namespace_facts"],
+        governed_environment=worker["governed_environment"],
+        static_graphics_libraries=worker["static_graphics_libraries"],
+    )
+    full = admission.build_full_renderer_fingerprint(
+        worker,
+        egl_identity={"vendor": "Mesa Project", "version": "1.5"},
+        gl_identity={
+            "vendor": "Mesa/X.org",
+            "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+            "version": "3.1 Mesa 21.1.5",
+        },
+        loaded_libs=worker["static_graphics_libraries"],
+    )
+    records = [
+        admission.build_renderer_probe_record(
+            index=index,
+            pid=1000 + index,
+            ppid=999,
+            worker_preimport_fingerprint=worker,
+            full_renderer_fingerprint=full,
+            environment_transition_audit=_fake_environment_transition_audit(config, worker),
+            config_sha256=config["config_sha256"],
+            runtime_lock_sha256=config["runtime"]["runtime_lock"]["sha256"],
+            probe_source_bindings_sha256=admission.probe_source_bindings_sha256(
+                config["probe_contract"]["source_files"]
+            ),
+            execution_commit="a" * 40,
+            context_records=[{
+                "ordinal": 0,
+                "egl_identity": full["egl_identity"],
+                "gl_identity": full["gl_identity"],
+                "loaded_graphics_libraries": full["loaded_graphics_libraries"],
+            }],
+            required_selected_extensions=["EGL_MESA_device_software"],
+            import_negative={
+                "policy_imported": False,
+                "processor_imported": False,
+                "libero_imported": False,
+                "forbidden_modules": [],
+            },
+            cleanup={
+                "status": "PASS",
+                "all_contexts_released": True,
+                "partial_paths_cleaned": True,
+                "egl_thread_released": True,
+            },
+        )
+        for index in range(3)
+    ]
+    if message == "hash":
+        records[0]["full_renderer_fingerprint_sha256"] = "0" * 64
+    else:
+        mutation(records)
+    with pytest.raises(admission.AdmissionError, match=message):
+        admission.verify_three_probe_records(
+            records,
+            config=config,
+            expected_parent_pid=999,
+            expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+@pytest.mark.parametrize(
+    "field, value, message",
+    [
+        ("config_sha256", "b" * 64, "config"),
+        ("runtime_lock_sha256", "b" * 64, "runtime"),
+        ("probe_source_bindings_sha256", "b" * 64, "source"),
+        ("execution_commit", "b" * 40, "execution"),
+    ],
+)
+def test_three_child_verifier_rejects_provenance_binding_drift(field, value, message) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    records[0][field] = value
+    with pytest.raises(admission.AdmissionError, match=message):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda r: r[0]["context_records"].pop(), "context"),
+        (lambda r: r[0]["context_records"][0].update(ordinal=1), "context"),
+        (lambda r: r[0]["context_records"][0]["gl_identity"].update(renderer="other"), "GL"),
+        (lambda r: r[0]["context_records"][0].update(pointer=object()), "context"),
+    ],
+)
+def test_three_child_verifier_rejects_context_record_drift(mutation, message) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    mutation(records)
+    with pytest.raises(admission.AdmissionError, match=message):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+def test_probe_environment_transition_audit_uses_exact_governed_mapping() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    audit = records[0]["environment_transition_audit"]
+    assert audit["events"] == [
+        "record_presence", "unset", "block_loader", "set_cache",
+        "set_renderer", "verify_final_mapping", "renderer_import",
+    ]
+    assert audit["final_environment"] == admission.governed_environment_final_mapping(config)
+    assert audit["renderer_modules_before"] == []
+    assert audit["renderer_modules_after"] == ["mujoco.egl.egl_ext"]
+
+
+def test_authoritative_three_probe_verifier_requires_repository_root() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    with pytest.raises(TypeError, match="repo_root"):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda r: r[0]["environment_transition_audit"]["events"].reverse(), "event"),
+        (lambda r: r[0]["environment_transition_audit"]["renderer_modules_before"].append("mujoco"), "before"),
+        (lambda r: r[0]["environment_transition_audit"]["renderer_modules_after"].clear(), "after"),
+        (lambda r: r[0]["environment_transition_audit"]["initial_presence"].pop("MUJOCO_GL"), "presence"),
+        (lambda r: r[0]["environment_transition_audit"]["final_environment"].update(MUJOCO_GL="old"), "environment"),
+        (lambda r: r[1]["environment_transition_audit"]["final_environment"].update(LD_PRELOAD="bad"), "environment"),
+    ],
+)
+def test_three_child_verifier_rejects_environment_transition_audit_drift(mutation, message) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    mutation(records)
+    with pytest.raises(admission.AdmissionError, match=message):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+def test_three_child_verifier_rejects_valid_schema_but_divergent_transition_audit() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    records[1]["environment_transition_audit"]["renderer_modules_after"] = ["OpenGL"]
+    with pytest.raises(admission.AdmissionError, match="transition|audit"):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda r: r[0]["environment_transition_audit"]["initial_presence"].update(
+                LD_PRELOAD={"present": True, "nonempty": True}
+            ),
+            "blocked|loader",
+        ),
+        (
+            lambda r: r[0]["environment_transition_audit"]["initial_presence"].update(
+                LD_LIBRARY_PATH={"present": False, "nonempty": False}
+            ),
+            "LD_LIBRARY_PATH|presence",
+        ),
+    ],
+)
+def test_probe_transition_audit_rejects_invalid_initial_loader_presence(mutation, message) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    mutation(records)
+    with pytest.raises(admission.AdmissionError, match=message):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+@pytest.mark.parametrize(
+    "drift, message",
+    [
+        (lambda record: record["worker_preimport_fingerprint"]["governed_environment"].update(
+            MUJOCO_EGL_DEVICE_ID="1"
+        ), "environment"),
+        (lambda record: record["worker_preimport_fingerprint"]["governed_environment"].update(
+            LD_PRELOAD="injected"
+        ), "environment"),
+        (lambda record: record["worker_preimport_fingerprint"]["governed_environment"].update(
+            HF_HOME="/tmp/changed-cache"
+        ), "environment"),
+    ],
+)
+def test_three_child_verifier_rejects_consistent_rehashed_environment_drift(drift, message) -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    for record in records:
+        drift(record)
+        _rehash_probe_payload(admission, record)
+    with pytest.raises(admission.AdmissionError, match=message):
+        admission.verify_three_probe_records(
+            records, config=config, expected_parent_pid=999, expected_execution_commit="a" * 40,
+            repo_root=ROOT,
+        )
+
+
+def test_authoritative_three_probe_verifier_rejects_rehashed_outer_config_drift() -> None:
+    admission = _module()
+    config = admission.load_admission_config(ROOT / "configs/m1/renderer_preflight_r1_egl0.yaml")
+    records = _valid_probe_records(admission, config)
+    changed = copy.deepcopy(config)
+    changed["renderer_device_id"] = "1"
+    changed["config_sha256"] = admission.config_contract_sha256(changed)
+    with pytest.raises(admission.AdmissionError, match="renderer namespace|config"):
+        admission.verify_three_probe_records(
+            records, config=changed, expected_parent_pid=999,
+            expected_execution_commit="a" * 40, repo_root=ROOT,
+        )

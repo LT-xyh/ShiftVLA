@@ -1,6 +1,6 @@
 schema_version: 1
 name: m1_n0_r1_renderer_preflight
-config_sha256: 66a52d8f6d9b2cdbd1476962c8f701d10071b79bd96c62f5ad1f93555568ecf5
+config_sha256: 96340934ef4447cb87295adc55cc415499f43f7c2c32f64742d545de49796246
 evidence_role: infrastructure_admission_only
 included_in_null_calibration_evidence: false
 
@@ -14,6 +14,40 @@ renderer_identity:
   vendor: Mesa/X.org
   renderer: llvmpipe (LLVM 12.0.0, 256 bits)
   version: 3.1 Mesa 21.1.5
+
+# The probe contract is infrastructure admission only.  It is deliberately
+# separate from the later null-calibration schedule and contains no action,
+# pair, regime, or numerical-envelope data.
+probe_contract:
+  schema_version: 1
+  probe_count: 3
+  expected_device_count: 1
+  selected_ordinal: 0
+  required_selected_extensions:
+    - EGL_MESA_device_software
+  expected_egl_identity:
+    vendor: Mesa Project
+    version: "1.5"
+  expected_gl_identity:
+    vendor: Mesa/X.org
+    renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+    version: 3.1 Mesa 21.1.5
+  source_files:
+    mujoco_egl_ext:
+      path: /public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/mujoco/egl/egl_ext.py
+      sha256: d3d261c51070482ca749efe14ccb5deb56c6abaf180092f20c8b954a6fa7ed05
+    robosuite_egl_context:
+      path: external/robosuite/robosuite/renderers/context/egl_context.py
+      sha256: 0919f2232ac4eccde2a1a2e1986b623a99fea109fa86a318cab04537150def49
+    robosuite_egl_context_installed:
+      path: /public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/renderers/context/egl_context.py
+      sha256: 0919f2232ac4eccde2a1a2e1986b623a99fea109fa86a318cab04537150def49
+    pyopengl_egl:
+      path: /public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/EGL/__init__.py
+      sha256: 13979115c0873667997e8ba58b985dca3f4f3bb3f5b68c89ce58f4e5505ad7fd
+    pyopengl_error:
+      path: /public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/error.py
+      sha256: 409e1416a583409dbe99fcb78fce96e6ed0fcdfd82fa3492345692efd8e81e86
 
 # Provenance bindings only.  This admission does not seed/reset/restore/settle.
 task_binding:
