@@ -21,6 +21,10 @@ acceptance is pending; no implementation plan or empirical execution is
 authorized by this amendment. The earlier unavailable independent review
 is not counted as PASS.
 
+The subsequent executable-payload, monitoring-suppression, earliest-startup,
+and implicit/asynchronous callback amendments below are mandatory design
+constraints. Their inclusion is not evidence of implementation or user ACCEPT.
+
 The 2026-09-08 renderer design remains authoritative for task, environment,
 operation counts, renderer identities, predecessor immutability, and single-shot
 execution. This revision supersedes the 2026-09-09 guard mechanism wherever it
@@ -61,6 +65,8 @@ source/code locator and validated call-site offsets where needed. Do not hash
 memory addresses or use mutable display names as authoritative identities.
 Unbound dynamically generated code is BLOCKED; generation needs its own
 source-bound contract before it can be admitted.
+Source/code locations are locators, not executable-payload attestation. Every
+source-derived binding must also satisfy Executable-Payload Correspondence below.
 
 Runtime object identities may be used privately to resolve aliases and bound
 methods to catalog entries. Persist only stable IDs. Renaming an alias must not
@@ -145,6 +151,45 @@ external dependencies still need source and boundary review. Unknown modules
 are rejected before execution and require source review before a draft audit
 can be repeated. No runtime result automatically adds permission.
 
+### Executable-Payload Correspondence
+
+Approval of Python source does not by itself authorize an executable payload.
+For every source-backed Python module or callable admitted by the guard, the
+loader and code-identity contract must establish, before execution, that the
+executable module code and all reachable nested code admitted under that source
+binding correspond to the reviewed source bytes under the pinned interpreter
+and declared compilation conditions.
+
+The authoritative relation is reviewed source bytes -> declared compilation
+semantics -> admitted executable payload, not reviewed source path/hash ->
+loader with matching metadata. A source-file SHA, loader identity, filename,
+qualified name, source location, line/offset metadata, bytecode-freshness header,
+or source-hash field is not by itself sufficient executable-payload attestation.
+
+Cached bytecode, frozen modules, sourceless modules, generated code, or other
+non-direct-source execution paths require an explicit executable-payload/source-
+provenance contract. It must establish correspondence between the executable
+code admitted to the interpreter and the reviewed source or other independently
+reviewed payload provenance. Without that correspondence before execution, the
+path is BLOCKED. This also applies to Python infrastructure and bootstrap code;
+their boundary dossiers cannot substitute metadata for payload provenance.
+
+Validation and execution must refer to the same admitted source/payload identity.
+A time-of-check/time-of-use substitution between validation and execution is
+forbidden unless an independently established immutability guarantee proves
+that substitution cannot occur. The contract covers nested code objects whose
+authority derives from the reviewed module. Metadata collisions, copied
+filenames/qualnames, or equivalent source-location metadata do not establish
+identity. No matching outer module metadata authorizes unbound nested code.
+
+Evidence binds, where applicable, reviewed source identity, loader identity,
+executable-payload/code provenance, pinned interpreter and declared compilation
+conditions, cache/frozen/generated-code disposition, validation/use correspondence
+or immutability guarantee, and the operation-catalog identity relying on that
+code. Missing, ambiguous, drifted, or inconsistent correspondence is BLOCKED
+and cannot be interpreted as an unused execution path. This amendment freezes
+the proof obligation, not a particular compiler/cache-handling implementation.
+
 ## Layer 2: external runtime observation and enforcement
 
 The execution target remains the pinned CPython 3.12.6 CPU interpreter. Consult
@@ -188,6 +233,19 @@ Any callbacks/threads that the native path can initiate need explicit coverage;
 do not assume the main-thread trace represents them. Validate installation
 before factory imports and check integrity at lifecycle boundaries. A callback
 exception must not permit silent continued execution with monitoring disabled.
+
+### Monitoring-Suppression Domain Clarification
+
+Monitoring-tool ownership alone does not imply isolation from other tracing,
+profiling, or monitoring mechanisms. The trusted-bootstrap and runtime-integrity
+contract must either establish that coexisting monitoring/tracing/profiling hooks
+and alternative execution hooks are absent under the admitted launch, or
+independently cover their execution and suppression effects. Tool-ID ownership
+and the guard's own event configuration are not sufficient evidence.
+
+Execution within any monitoring-suppressed region is never evidence of absence
+merely because this guard did not receive an event. Missing suppression-domain
+coverage is BLOCKED, including when the guard's own callbacks appear intact.
 
 ### Irreversible Violation State Machine
 
@@ -258,7 +316,24 @@ C/C++ execution monitor or a general-purpose hostile-code sandbox.
 
 ## Lifetime, failure, and parent-owned final judgment
 
+### Trusted Bootstrap Start Boundary
+
+The source-bound bootstrap contract begins at the earliest executable startup
+boundary relevant to the admitted child process, not merely when the application-
+level guard bootstrap starts. Interpreter startup configuration and executable
+startup hooks, including applicable `site`, `.pth`, customization, tracing,
+profiling, preload, or equivalent startup behavior, must either be disabled by
+the frozen launch contract or included in reviewed bootstrap provenance.
+
+A fresh PID or post-start module inventory does not by itself prove that no
+executable startup work occurred earlier. Reviewed launch/bootstrap provenance
+must cover the interval before runtime monitoring is installed; no retrospective
+zero-use claim can replace it. Source-backed startup payloads obey Executable-
+Payload Correspondence; other startup behavior needs its independently reviewed
+source/native provenance. Unknown startup behavior blocks admission.
+
 The production child installs protection before official imports/factory entry.
+That installation is a runtime milestone, not the start of bootstrap authority.
 Its guarded phases are passive import, factory construction, the single render,
 environment teardown, and exit. Only the pinned control plane advances phase;
 a callable cannot grant itself a new phase or permission.
@@ -268,6 +343,22 @@ to the running workload cannot disable hooks or create a reusable terminal PASS.
 Any early-disarm attempt is latched BLOCKED. On failure, the audited supervisor's
 guarded finally path attempts only approved cleanup when safe transfer is proven.
 Failure to clean up remains BLOCKED.
+
+### Implicit and Asynchronous Callback Coverage
+
+Callback and terminal-boundary proofs include explicit calls and implicit or
+asynchronous executable entries. Where applicable these include reference-release
+finalizers, weak-reference callbacks, collection/finalization callbacks, deferred
+signal handling, native-triggered callbacks, and pending native work. Such
+behavior must be absent under the frozen execution contract or covered by the
+corresponding source/native/infrastructure dossier.
+
+In particular, the interval from final evidence publication through the no-return
+termination primitive must not admit uncontrolled workload callbacks or other
+mutable application execution. Releasing references or completing a write cannot
+be assumed inert merely because no explicit workload call appears in the source.
+Unknown implicit or asynchronous behavior remains BLOCKED. The same obligation
+applies to callback-suppressed control-plane work and failure cleanup.
 
 ### Controlled Terminal Boundary
 
@@ -316,6 +407,11 @@ module closure, canonical operation-catalog SHA, infrastructure/native dossier h
 phase transitions, fresh PID/parent identity, installation/integrity checks,
 attempted versus completed counts, latched violations, teardown outcome, and
 terminal marker/sequence/digest and parent-observed death/EOF/exit status.
+Also bind executable-payload correspondence and nested-code authority,
+compilation/cache dispositions, validation/use guarantees, earliest-startup
+provenance, hook/suppression-domain disposition, and implicit/asynchronous
+callback absence or coverage dossiers. Missing evidence in any of these domains
+is BLOCKED, not an unused path or an inferred zero count.
 Use strict schemas and deterministic canonical
 hashing; absence, drift, or inconsistent bindings invalidate the record.
 
@@ -350,6 +446,21 @@ evidence. No module-import audit or unit-test result alone satisfies this gate.
   third-party code or replacing class identities.
 - Reject unknown import-time operations and alternate/indirect loaders before
   their bodies; reject source, code-offset, binary, and catalog drift.
+- Reject approved source with a mismatched cached executable payload; reject
+  executable code with colliding filename, qualname, or source-location metadata.
+- Reject source validation followed by executable-payload substitution; reject
+  sourceless/frozen/generated execution without explicit payload provenance.
+- Reject nested executable code not traceable to its admitted source/payload
+  authority, even when the outer module's source and loader metadata match.
+- Reject uncovered coexisting tracing/profiling/monitoring or alternative
+  execution hooks and their suppression effects; absence of guard events is
+  not acceptable evidence that these paths did not execute.
+- Reject executable startup hooks outside the disabled-or-reviewed launch
+  contract, including startup before application bootstrap; a fresh PID and
+  clean post-start inventory cannot rescue admission.
+- Reject uncovered implicit/asynchronous callbacks and pending native work,
+  including finalizers, weakref/collection callbacks, and deferred signals
+  between final evidence publication and no-return termination.
 - Block forbidden class construction before custom `__new__` side effects;
   test inherited and generated dataclass constructors and native-boundary gaps.
 - Prove unknown native behavior remains BLOCKED despite an allowed outer entry;
