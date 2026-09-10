@@ -14,18 +14,20 @@ Current statuses remain:
 - M1-N0 = BLOCKED.
 - New schedule = NOT CREATED.
 
-Written-spec checkpoint: main-agent self-review completed. The independent
-written-spec review did not return a usable verdict in this session and is
-not counted as PASS. User review of this written document is pending. None of
-these document-level states replaces the required implementation/specification
-acceptance before empirical execution.
+Written-spec checkpoint: the user's written review returned REVISE, not
+NOT_ACCEPTED. The three amendments below address coverage-domain scope,
+irreversible enforcement, and controlled termination. Revised written-spec
+acceptance is pending; no implementation plan or empirical execution is
+authorized by this amendment. The earlier unavailable independent review
+is not counted as PASS.
 
 The 2026-09-08 renderer design remains authoritative for task, environment,
 operation counts, renderer identities, predecessor immutability, and single-shot
 execution. This revision supersedes the 2026-09-09 guard mechanism wherever it
 relies on module permission or name heuristics as evidence of allowed use.
 It also supersedes child-side early guard restoration: production protection
-must remain active until process death, not merely until render returns.
+must cover the workload through the controlled terminal boundary defined below,
+not merely until render returns. Parent-observed death remains required for PASS.
 
 No third-party source or bytecode rewriting is selected. No ReplayState,
 replay, CC/CS/SC/SS, M2, physics tolerance, or old bundle changes are in scope.
@@ -67,10 +69,41 @@ explicitly; do not trust a copied `__name__` or `__module__` attribute.
 
 The catalog has exact, disjoint ALLOW and FORBID entries. Duplicate, ambiguous,
 unresolved, conflicting, or source-drifted entries invalidate admission.
-An observed call with no matching valid ALLOW entry is BLOCKED. FORBID wins
+An observed semantic call with no matching valid ALLOW entry is BLOCKED. FORBID wins
 over any wrapper or outer-entry permission. No wildcard, module-prefix grant,
 name-substring classifier, automatic catalog growth, or blanket permission for
 all calls beneath an allowed entry is permitted.
+
+### Guard Coverage Domain and Infrastructure Boundaries
+
+The coverage domain is the frozen preflight workload and its reachable semantic
+boundaries, not a capability sandbox for every callable in CPython. Every
+delivered call/entry event must resolve to either a semantic operation or a
+reviewed infrastructure boundary; an unresolved or unknown semantic boundary
+is BLOCKED. There is no third category of silently ignored calls.
+
+Semantic operations require individual catalog entries: factory, reset, render,
+step, processor, policy, model/checkpoint loading, RuntimeAdapter, replay, and
+network/Hub operations, including indirect entry to those behaviors. Their
+dispositions and counts cannot be absorbed into infrastructure permission.
+
+Pure utility primitives and stable stdlib/control-plane helpers may instead
+resolve to a frozen source/binary boundary dossier. The dossier defines exact
+membership resolution, source/build identities, supported caller/type/dispatch
+conditions, lifecycle permissions, reachable effects, and semantic exits that
+remain independently guarded. It may cover a reviewed family of primitives
+without enumerating each invocation as a scientific operation. A module prefix,
+the label "stdlib", or ancestry beneath an allowed call is never sufficient.
+Overloaded methods, descriptors, callbacks, or higher-order dispatch cannot
+inherit utility permission: prove their dispatch restrictions or guard their
+semantic exits; otherwise BLOCKED. Boundary drift and ambiguous membership
+also block admission. No runtime trace expands a dossier automatically.
+
+Global event delivery does not imply a global per-callable scientific whitelist.
+The resolver records the semantic operation ID or infrastructure dossier ID
+supporting each decision. Native internals and callback-suppressed work still
+require independent coverage under Layer 3; a dossier is not an exemption from
+FORBID, loader checks, phase restrictions, or the violation state machine.
 
 ### Legal path and prohibited operations
 
@@ -78,8 +111,9 @@ ALLOW entries cover only the reviewed path: necessary passive imports and
 declarations; exact audited registration helpers; official environment factory
 construction; simulator model/data and renderer construction; exactly one
 public render; and necessary teardown, bounded diagnostics, and process exit.
-Every observable helper needs its own catalog entry; unobservable work needs
-explicit boundary coverage. Neither inherits permission from the factory.
+Observable helpers need semantic permission or audited infrastructure coverage;
+unobservable work needs explicit boundary coverage. Neither inherits permission
+from the factory.
 Simulator model/data construction is distinct
 from prohibited ML model/checkpoint loading.
 
@@ -133,19 +167,19 @@ rejected before their bodies, but C-mediated `map`, `partial`, and
 check caught the tested Python targets. This is a feasibility observation,
 not universal coverage of higher-order dispatch or native call targets.
 
-Every delivered call/entry event must resolve to the frozen catalog. A target
-FORBID or missing permission latches BLOCKED and prevents further normal
-execution. Explicitly catalogued failure teardown and diagnostic operations
-may still run; all other work remains prohibited even if an exception was
-caught. No callback returns DISABLE to optimize away future checking.
+Every delivered call/entry event is resolved under the Guard Coverage Domain.
+FORBID, missing permission, or missing boundary evidence triggers the irreversible
+transition below. No callback returns DISABLE to optimize away future checking.
 
-Interpreter helpers, standard-library calls, and harness/control-plane calls
-are not silently exempted by module prefix. Observable calls require catalog
-entries even if a broader source audit exists. Unobservable work requires
-independently audited boundary coverage. The callback implementation
-and bootstrap are trusted, source-bound control-plane components; event
-suppression inside monitoring callbacks is a coverage boundary, not evidence
-that nothing executes there. Unsupported paths cannot contribute zero-use PASS.
+The callback and bootstrap are source-bound control-plane components. For the
+registering tool, events are suspended in its callbacks and their callees
+([PEP 669, callback events](https://peps.python.org/pep-0669/#events-in-callback-functions)).
+This is a trusted coverage boundary, not self-monitoring evidence. Its frozen
+dossier must bound identity resolution, latch updates, redacted evidence writes,
+and rejection machinery. No workload callback, arbitrary formatting/descriptor
+dispatch, import, or environment cleanup may be invoked from that suppressed
+region. Cleanup runs after callback unwinding with protection active. An
+uncovered callback callee blocks admission, even if its outer callback is trusted.
 
 Reserve a configured monitoring tool ID without stealing another tool's state.
 Missing APIs, ownership conflicts, stale callbacks/events, callback failure,
@@ -154,6 +188,48 @@ Any callbacks/threads that the native path can initiate need explicit coverage;
 do not assume the main-thread trace represents them. Validate installation
 before factory imports and check integrity at lifecycle boundaries. A callback
 exception must not permit silent continued execution with monitoring disabled.
+
+### Irreversible Violation State Machine
+
+The normal failure path is `RUNNING -> VIOLATION_LATCHED -> CLEANUP_ONLY -> EXIT`;
+unsafe cleanup permits only `VIOLATION_LATCHED -> EXIT` with BLOCKED preserved.
+No reverse transition is legal. Normal completion takes a separate guarded
+teardown/terminal path; it cannot overwrite a latched violation.
+
+On violation, the guard first irrevocably records BLOCKED, revokes all normal
+work permissions, and rejects dispatch by raising a dedicated guard exception
+at CALL, or rejects the Python body at PY_START where that complementary
+coverage applies. Pre-entry native side effects still require Layer 3 coverage.
+Raising alone is not the enforcement proof. Each subsequent decision reads the
+latched state: only frozen failure-unwind, cleanup, and diagnostic permissions
+can succeed, including infrastructure permissions narrowed to that failure path.
+Only the pinned outer supervisor may enter CLEANUP_ONLY; calling an allowed
+cleanup function from workload code does not grant that control-plane context.
+Supervisor authority must be protected from workload forgery or mutation under
+the frozen supported path; a writable phase flag or reusable workload token is
+not sufficient. Failure to establish that boundary blocks admission.
+
+CALL/PY_START alone cannot prevent inline bytecode continuation in an already
+active frame after `except BaseException`. The enforcement contract therefore
+also requires a source-bound rejection-transfer gate before any post-rejection
+workload continuation (including exception handlers, finally blocks, and
+generator/coroutine resumption). The implementation plan must select and test
+an instruction/resumption-level gate or equivalently proven narrow transfer
+mechanism for the pinned interpreter. Only audited failure-unwind/control-plane
+locations may proceed; ordinary continuation must be rejected before effects.
+If safe transfer to the supervisor cannot be proved, terminate BLOCKED through
+the audited failure termination path; do not resume work to obtain cleanup.
+Parent timeout/termination is a failure fallback, not proof that continuation
+was prevented. Cleanup is best-effort under protection, never permission to
+execute arbitrary finally handlers. Missing this transfer proof blocks admission.
+
+The latch has no workload reset API; child reports cannot clear it or rewrite
+parent-held evidence. Caught exceptions never restore permissions. Callback
+failure, recursion, or lost monitoring integrity likewise cannot resume normal
+work; an independently audited failure path must terminate BLOCKED if guarded
+cleanup is unsafe. No cleanup executes inside the callback's suppressed region.
+The implementation must prove both target nonexecution and continuation
+prevention, not merely that the final verdict stayed BLOCKED.
 
 ## Layer 3: native boundary coverage
 
@@ -189,25 +265,43 @@ a callable cannot grant itself a new phase or permission.
 
 Rendering success does not disarm the monitor. `close()`/`finalize()` exposed
 to the running workload cannot disable hooks or create a reusable terminal PASS.
-Any early-disarm attempt is latched BLOCKED. On failure, a guarded finally path
-attempts only the approved cleanup. Failure to clean up remains BLOCKED.
+Any early-disarm attempt is latched BLOCKED. On failure, the audited supervisor's
+guarded finally path attempts only approved cleanup when safe transfer is proven.
+Failure to clean up remains BLOCKED.
 
-The empirical child retains its monitor through teardown, diagnostics, exit
-handlers, and process termination; OS process death ends its ownership. It
-does not free its monitoring slot and then resume an unguarded exit tail.
-The shutdown path itself needs the same source/native coverage. A child report
-is provisional: only the parent, after observing the fresh child's terminal
-exit, can validate complete evidence and publish PASS. Missing reports, abnormal
-exit, timeouts, trace loss, unsupported shutdown, or a still-running child are
-BLOCKED. No retry, replacement, child/frame reuse, or extra render is permitted.
+### Controlled Terminal Boundary
 
-The parent owns a bounded trace channel and drains it through child death/EOF;
-it materializes the final trace hash after reaping the child. A provisional
-child-report file is not the last-event boundary. Post-report teardown or exit
-violations must reach that channel or invalidate the run. The exact transport
-and shutdown tail need an audited control-plane/native contract; a lost channel
-or unsupported tail is BLOCKED even with exit code zero. Do not solve the tail
-problem by disabling monitoring before exit or by dropping final events.
+The protected sequence is guarded application teardown, guarded final evidence
+flush, parent-visible terminal marker, then minimal independently audited
+process termination. Scientific guard lifetime ends only at this frozen
+controlled terminal boundary. It is not a claim to observe arbitrary CPython
+finalization internals. For a PASS candidate, application cleanup must already
+be complete; an incomplete-cleanup failure may terminate only as BLOCKED. There is
+no return to workload, third-party exit handler, or mutable child-owned final
+evidence after crossing the boundary. No early-disarm/resume window is allowed.
+
+The terminal contract binds the final trace sequence and evidence digest to a
+single marker on the parent-owned bounded channel, along with the termination
+primitive's source/binary identity, no-return semantics, and permitted effects.
+The child emits the marker after the guarded flush, bound to its fresh PID/run
+identity; the parent cannot synthesize a missing child marker.
+The parent drains through child death and EOF and seals the received evidence;
+a child cannot replace that record with a later report. Missing/duplicate
+markers, unexpected post-marker application records, lost bytes, termination
+failure, or a still-running child yield BLOCKED. Exit code zero alone is not PASS.
+
+The implementation plan must compare a minimal termination primitive (including
+`os._exit()` as a candidate, not a selected implementation) against a bounded
+normal-exit path. Either requires independent termination semantics evidence.
+Arbitrary third-party atexit handlers or unbounded interpreter shutdown are not
+silently covered. A normal-exit alternative is admissible only if it proves an
+equally bounded no-workload terminal path; otherwise it remains BLOCKED.
+
+A child report or terminal marker is provisional, never PASS. Only after child
+death plus EOF may the parent validate the complete trace, successful teardown,
+terminal contract, and absence of violations. A failure marker preserves BLOCKED
+even after clean termination. No retry, replacement, child/frame reuse, or extra
+render is permitted. Transport loss or unsupported termination remains BLOCKED.
 
 Synthetic test-harness cleanup is separate from production lifetime. Tests may
 release their own monitoring tool only after the tested workload has ended,
@@ -218,14 +312,16 @@ early-restoration success from these unit tests.
 ## Evidence and validator contract
 
 Bind interpreter/runtime, harness Git identity, source and loader identities,
-module closure, canonical operation-catalog SHA, native coverage dossier hashes,
+module closure, canonical operation-catalog SHA, infrastructure/native dossier hashes,
 phase transitions, fresh PID/parent identity, installation/integrity checks,
 attempted versus completed counts, latched violations, teardown outcome, and
-parent-observed exit status. Use strict schemas and deterministic canonical
+terminal marker/sequence/digest and parent-observed death/EOF/exit status.
+Use strict schemas and deterministic canonical
 hashing; absence, drift, or inconsistent bindings invalidate the record.
 
 An ordered bounded trace contains only event sequence, phase, event kind,
-stable operation and source/call-site IDs, disposition, and completion status
+stable operation or infrastructure-dossier and source/call-site IDs,
+disposition, violation-state transitions, and completion status
 where observable. No argument values, locals, return contents, pointer reprs,
 RGB bytes/hashes, state, success/reward inspection, or pixel metrics are allowed.
 The public-render return retains only the metadata authorized by the original
@@ -240,8 +336,9 @@ explicitly updated and reviewed before any empirical command, not discovered
 by writing outside the existing admission artifact allowlist.
 
 PASS requires the unchanged exact preflight operation counts, no forbidden or
-unknown attempts, complete required coverage, an intact guard through the full
-lifetime, successful teardown, and parent-confirmed exit with hash-valid
+unknown attempts, complete required coverage, an intact guard throughout the
+workload lifetime through the controlled terminal boundary, successful teardown,
+and parent-confirmed death plus EOF with hash-valid
 evidence. No module-import audit or unit-test result alone satisfies this gate.
 
 ## Required regression and adversarial tests
@@ -258,10 +355,19 @@ evidence. No module-import audit or unit-test result alone satisfies this gate.
 - Prove unknown native behavior remains BLOCKED despite an allowed outer entry;
   test missing dossiers, broad helpers, and unsatisfied boundary assumptions.
 - Prove caught violations cannot resume normal work or erase failed evidence;
-  test early finalize/close, monitor tampering, stale tool state, callback errors,
+  include inline side effects after `except BaseException`, repeated catches,
+  finally/resumption paths, cleanup-only permission narrowing, and callback
+  callees that attempt reentrant workload dispatch; a BLOCKED flag alone fails.
+  Test early finalize/close, monitor tampering, stale tool state, callback errors,
   phase spoofing, trace overflow, unsupported threads/callbacks, and exit failure.
 - Prove protection is active during factory, render, teardown, and exit paths;
   a provisional child success cannot become parent PASS before process exit.
+- Prove infrastructure dossiers cannot hide semantic calls, overloaded dispatch,
+  or loader bypass; unknown boundaries remain BLOCKED without per-primitive
+  scientific enumeration.
+- Prove terminal-marker integrity, no workload return after the boundary,
+  missing/duplicate markers, post-marker records, channel loss, and death without
+  EOF cannot yield PASS; arbitrary finalization is not assumed covered.
 - Prove exact operation counts and redacted evidence; no forbidden observation
   content, null data, or experimental frame survives into artifacts.
 - Revalidate the untouched predecessor and absence of new empirical artifacts.

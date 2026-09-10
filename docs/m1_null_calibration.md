@@ -240,3 +240,11 @@ independently covered or blocked native boundaries. The written design is
 It does not claim universal native visibility, authorize an empirical run, or
 change the rejected implementation's status. Guard design remains REVISE,
 Renderer Preflight NOT RUN, M1-N0 BLOCKED, and the new schedule NOT CREATED.
+
+The user's subsequent written-spec review returned REVISE (not NOT_ACCEPTED).
+The revised spec now distinguishes semantic operations from audited infrastructure
+boundaries, requires irreversible violation enforcement including post-catch
+continuation prevention, and replaces arbitrary shutdown-tail coverage with a
+controlled terminal boundary plus parent-observed death/EOF. These are design
+amendments only. User ACCEPT is still required before an implementation plan;
+no runtime correction, catalog freeze, preflight, or schedule is claimed here.
