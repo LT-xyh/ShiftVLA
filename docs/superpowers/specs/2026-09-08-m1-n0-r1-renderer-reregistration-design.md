@@ -2,6 +2,18 @@
 
 ## Status and scope
 
+### Operation-guard design revision (2026-09-10)
+
+The user approved a source-bound explicit operation catalog, `sys.monitoring`,
+and native-boundary fail-closed enforcement. The written revision is in
+`2026-09-10-m1-r1-operation-guard-design.md` in this directory. It supersedes
+the guard mechanism and early child-side restoration wording below, without
+changing the experimental scope or counts. Production monitoring remains
+active until process death; only the parent can finalize admission after exit.
+The monitor is not proof of complete native/C-internal execution coverage.
+Guard design remains REVISE pending the revision's review and implementation
+gates. Renderer Preflight is NOT RUN; M1-N0 is BLOCKED; no new schedule exists.
+
 ### Approved passive-import clarification (2026-09-09)
 
 The user explicitly approved a narrow exception to the processor import

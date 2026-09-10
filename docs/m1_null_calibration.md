@@ -192,3 +192,51 @@ processor construction/calls. Until resolved and the missing execution path
 is implemented and committed, the real preflight remains NOT RUN and no new
 schedule is created. The committed backend checkpoint is
 `b92f1370e2f2afd5eba6d6d4cfe5a96cffa98d66`; it is not execution identity `P`.
+
+The user subsequently approved the narrow passive-import clarification on
+2026-09-09. The amended design and the new passive-import-closure plan record
+the exact-module-only exception and all retained no-use constraints. This
+resolves the need for authorization; it does not establish a frozen observed
+closure, runtime zero-use evidence, or a completed preflight implementation.
+Those are separate implementation and verification steps, and the empirical
+preflight remains NOT RUN until they are completed and reviewed.
+
+### Passive-import guard implementation checkpoint (2026-09-10)
+
+The uncommitted guard and focused tests are an incomplete implementation,
+not an admission-ready boundary. The pinned CPU interpreter ran 26 focused
+tests successfully, including passive declarations, inherited/dataclass
+construction checks, and cleanup regressions. This does **not** establish
+complete forbidden-operation coverage: the current name-based classifier
+does not recognize converter functions such as `batch_to_transition`,
+`to_tensor`, and `transition_to_batch`. Their absence from the counters cannot
+be interpreted as evidence that no processing occurred. Native/opaque
+instrumentation gaps also remain; they must not be accepted as zero use.
+
+A separate read-only source audit identified 55 LeRobot-side candidate
+modules from the `lerobot.envs` import seam. These are static candidates, not
+an observed or frozen allowlist. The external Transformers/tokenizers
+dependency closure still requires audit and verified guard coverage.
+
+Independent specification review returned **NOT_ACCEPTED**. In addition to
+missing operation classifications, synthetic checks reproduced an unlisted
+import-time side effect and an alternate-loader path with false-zero `PASS`
+evidence. A custom `__new__` ran before the constructor guard, and early
+`finalize()` could remove protection while the enclosing scope remained
+active. These are implementation defects, not evidence about renderer
+behavior. A source-bound explicit operation catalogue and verified execution
+coverage require a design checkpoint before replacing the core mechanism.
+
+The corresponding design revision and implementation corrections are pending.
+No official guarded import-only audit, renderer preflight, frozen processor
+closure, new R1 null configuration, or new calibration schedule is established
+by this checkpoint. The preserved predecessor bundle remains out of scope
+for modification.
+
+The user subsequently approved the three-layer redesign on 2026-09-10:
+source-bound explicit operations, external `sys.monitoring` observation, and
+independently covered or blocked native boundaries. The written design is
+`docs/superpowers/specs/2026-09-10-m1-r1-operation-guard-design.md`.
+It does not claim universal native visibility, authorize an empirical run, or
+change the rejected implementation's status. Guard design remains REVISE,
+Renderer Preflight NOT RUN, M1-N0 BLOCKED, and the new schedule NOT CREATED.
