@@ -26,6 +26,8 @@ def inspect(data: bytes) -> dict:
                 target=(mod.value,name.value); stack.append(Sym('GLOBAL',target)); globals.append((pos,n,target))
         elif n in ('BINPUT','LONG_BINPUT','PUT'):
             idx=int(arg); memo[idx]=stack[-1] if stack else Sym('MISSING'); writes.append(idx)
+        elif n=='MEMOIZE':
+            idx=len(memo); memo[idx]=stack[-1] if stack else Sym('MISSING'); writes.append(idx)
         elif n in ('BINGET','LONG_BINGET','GET'):
             idx=int(arg); stack.append(memo.get(idx,Sym('MISSING'))); reads.append(idx)
         elif n in ('TUPLE','TUPLE1','TUPLE2','TUPLE3'):

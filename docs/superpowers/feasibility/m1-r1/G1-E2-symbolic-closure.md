@@ -50,6 +50,24 @@ and memo writes. Synthetic tests cover REDUCE/BUILD presence and rejection of
 PERSID. The prototype intentionally never calls `pickle.loads`; its output
 keeps physical values opaque.
 
+For each authority opcode, the VM event snapshots were:
+
+| offset | opcode | stack before → after | memo reads / writes |
+|---:|---|---|---|
+| 2 | GLOBAL | `()` → `(GLOBAL)` | `[] / []` |
+| 40 | GLOBAL | `(GLOBAL)` → `(GLOBAL, GLOBAL)` | `[] / []` |
+| 62 | GLOBAL | `(GLOBAL, TUPLE)` → `(GLOBAL, TUPLE, GLOBAL)` | `[] / []` |
+| 104 | REDUCE | `(GLOBAL, TUPLE)` → `(REDUCE_RESULT)` | `[] / []` |
+| 110 | REDUCE | `(TUPLE)` → `(REDUCE_RESULT)` | `[] / []` |
+| 123 | GLOBAL | `(TUPLE)` → `(TUPLE, GLOBAL)` | `[] / []` |
+| 152 | REDUCE | `(TUPLE)` → `(REDUCE_RESULT)` | `[] / []` |
+| 184 | BUILD | `(REDUCE_RESULT, TUPLE)` → `(BUILT)` | `[] / []` |
+| 43851 | REDUCE | `(BUILT, TUPLE)` → `(REDUCE_RESULT)` | `[] / []` |
+| 43857 | BUILD | `(REDUCE_RESULT, TUPLE)` → `(BUILT)` | `[] / []` |
+
+Memo writes occur at non-authority `MEMOIZE`/put instructions and are retained
+in the event stream; no authority opcode itself reads or writes a memo entry.
+
 ## Required predicates and current result
 
 The fixed stream provides strong negative evidence: no extension opcode,
