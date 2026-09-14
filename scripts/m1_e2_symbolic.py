@@ -22,7 +22,9 @@ def inspect(data: bytes) -> dict:
         elif n=='POP_MARK':
             if marks: del stack[marks.pop():]
         elif n in ('NONE','NEWTRUE','NEWFALSE','BININT','BININT1','BININT2','LONG','BINFLOAT','BINUNICODE','SHORT_BINUNICODE','BINBYTES','SHORT_BINBYTES'):
-            stack.append(Sym(n, arg if n not in ('BINBYTES','SHORT_BINBYTES') else '<opaque>'))
+            # Raw literals are physical-opaque by default.  GLOBAL names are
+            # the only authority literals retained by this generic VM.
+            stack.append(Sym(n, '<opaque>'))
         elif n in ('EMPTY_TUPLE','EMPTY_LIST','EMPTY_DICT','EMPTY_SET'):
             stack.append(Sym(n[6:].upper() if n!='EMPTY_TUPLE' else 'TUPLE', ()))
         elif n in ('GLOBAL','STACK_GLOBAL'):
@@ -66,6 +68,25 @@ def inspect(data: bytes) -> dict:
                 unsupported.append((pos,n,arg))
         events.append({'offset':pos,'opcode':n,'before':before,'after':tuple(x.kind for x in stack),'memo_reads':reads,'memo_writes':writes})
     return {'events':events,'globals':globals,'reducers':reducers,'builds':builds,'unsupported':unsupported,'final_stack':tuple(x.kind for x in stack),'memo_size':len(memo)}
+
+def authority_graph(result: dict) -> dict:
+    """Return a sanitized deterministic graph; never include Sym.value leaves."""
+    ids={}; nodes=[]
+    def node(s):
+        key=id(s)
+        if key in ids: return {'ref':ids[key]}
+        ident=f'{s.kind}#{len(ids)+1}'; ids[key]=ident
+        value=s.value if s.kind=='GLOBAL' else None
+        out={'id':ident,'kind':s.kind}
+        if value is not None: out['authority']=value
+        if isinstance(s.value,tuple): out['children']=[node(x) for x in s.value if isinstance(x,Sym)]
+        nodes.append(out); return {'ref':ident}
+    ops=[]
+    for p,fn,args,out in result['reducers']:
+        ops.append({'offset':p,'opcode':'REDUCE','callable':node(fn),'args':node(args),'result':node(out)})
+    for p,target,state in result['builds']:
+        ops.append({'offset':p,'opcode':'BUILD','target':node(target),'state':node(state)})
+    return {'operations':sorted(ops,key=lambda x:x['offset']),'nodes':nodes,'unsupported':[(p,n) for p,n,_ in result['unsupported']]}
 
 if __name__ == '__main__':
     import pathlib, zipfile, json

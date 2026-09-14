@@ -1,0 +1,363 @@
+{
+  "asset_member": "archive/data.pkl",
+  "nodes": [
+    {
+      "authority": "_codecs encode",
+      "id": "GLOBAL#1",
+      "kind": "GLOBAL"
+    },
+    {
+      "id": "BINUNICODE#3",
+      "kind": "BINUNICODE"
+    },
+    {
+      "id": "BINUNICODE#4",
+      "kind": "BINUNICODE"
+    },
+    {
+      "children": [
+        {
+          "ref": "BINUNICODE#3"
+        },
+        {
+          "ref": "BINUNICODE#4"
+        }
+      ],
+      "id": "TUPLE#2",
+      "kind": "TUPLE"
+    },
+    {
+      "children": [
+        {
+          "ref": "GLOBAL#1"
+        },
+        {
+          "ref": "TUPLE#2"
+        }
+      ],
+      "id": "REDUCE_RESULT#5",
+      "kind": "REDUCE_RESULT"
+    },
+    {
+      "authority": "numpy.core.multiarray _reconstruct",
+      "id": "GLOBAL#6",
+      "kind": "GLOBAL"
+    },
+    {
+      "authority": "numpy ndarray",
+      "id": "GLOBAL#8",
+      "kind": "GLOBAL"
+    },
+    {
+      "id": "BININT1#10",
+      "kind": "BININT1"
+    },
+    {
+      "children": [
+        {
+          "ref": "BININT1#10"
+        }
+      ],
+      "id": "TUPLE#9",
+      "kind": "TUPLE"
+    },
+    {
+      "children": [
+        {
+          "ref": "GLOBAL#8"
+        },
+        {
+          "ref": "TUPLE#9"
+        },
+        {
+          "ref": "REDUCE_RESULT#5"
+        }
+      ],
+      "id": "TUPLE#7",
+      "kind": "TUPLE"
+    },
+    {
+      "children": [
+        {
+          "ref": "GLOBAL#6"
+        },
+        {
+          "ref": "TUPLE#7"
+        }
+      ],
+      "id": "REDUCE_RESULT#11",
+      "kind": "REDUCE_RESULT"
+    },
+    {
+      "authority": "numpy dtype",
+      "id": "GLOBAL#12",
+      "kind": "GLOBAL"
+    },
+    {
+      "id": "BINUNICODE#14",
+      "kind": "BINUNICODE"
+    },
+    {
+      "id": "NEWFALSE#15",
+      "kind": "NEWFALSE"
+    },
+    {
+      "id": "NEWTRUE#16",
+      "kind": "NEWTRUE"
+    },
+    {
+      "children": [
+        {
+          "ref": "BINUNICODE#14"
+        },
+        {
+          "ref": "NEWFALSE#15"
+        },
+        {
+          "ref": "NEWTRUE#16"
+        }
+      ],
+      "id": "TUPLE#13",
+      "kind": "TUPLE"
+    },
+    {
+      "children": [
+        {
+          "ref": "GLOBAL#12"
+        },
+        {
+          "ref": "TUPLE#13"
+        }
+      ],
+      "id": "REDUCE_RESULT#17",
+      "kind": "REDUCE_RESULT"
+    },
+    {
+      "id": "BINUNICODE#19",
+      "kind": "BINUNICODE"
+    },
+    {
+      "children": [
+        {
+          "ref": "BINUNICODE#19"
+        },
+        {
+          "ref": "BINUNICODE#4"
+        }
+      ],
+      "id": "TUPLE#18",
+      "kind": "TUPLE"
+    },
+    {
+      "children": [
+        {
+          "ref": "GLOBAL#1"
+        },
+        {
+          "ref": "TUPLE#18"
+        }
+      ],
+      "id": "REDUCE_RESULT#20",
+      "kind": "REDUCE_RESULT"
+    },
+    {
+      "id": "BININT1#22",
+      "kind": "BININT1"
+    },
+    {
+      "id": "BINUNICODE#23",
+      "kind": "BINUNICODE"
+    },
+    {
+      "id": "NONE#24",
+      "kind": "NONE"
+    },
+    {
+      "id": "NONE#25",
+      "kind": "NONE"
+    },
+    {
+      "id": "NONE#26",
+      "kind": "NONE"
+    },
+    {
+      "id": "BININT#27",
+      "kind": "BININT"
+    },
+    {
+      "id": "BININT#28",
+      "kind": "BININT"
+    },
+    {
+      "id": "BININT1#29",
+      "kind": "BININT1"
+    },
+    {
+      "children": [
+        {
+          "ref": "BININT1#22"
+        },
+        {
+          "ref": "BINUNICODE#23"
+        },
+        {
+          "ref": "NONE#24"
+        },
+        {
+          "ref": "NONE#25"
+        },
+        {
+          "ref": "NONE#26"
+        },
+        {
+          "ref": "BININT#27"
+        },
+        {
+          "ref": "BININT#28"
+        },
+        {
+          "ref": "BININT1#29"
+        }
+      ],
+      "id": "TUPLE#21",
+      "kind": "TUPLE"
+    },
+    {
+      "id": "BININT1#31",
+      "kind": "BININT1"
+    },
+    {
+      "id": "BININT1#33",
+      "kind": "BININT1"
+    },
+    {
+      "id": "BININT1#34",
+      "kind": "BININT1"
+    },
+    {
+      "children": [
+        {
+          "ref": "BININT1#33"
+        },
+        {
+          "ref": "BININT1#34"
+        }
+      ],
+      "id": "TUPLE#32",
+      "kind": "TUPLE"
+    },
+    {
+      "children": [
+        {
+          "ref": "REDUCE_RESULT#17"
+        },
+        {
+          "ref": "TUPLE#21"
+        }
+      ],
+      "id": "BUILT#35",
+      "kind": "BUILT"
+    },
+    {
+      "id": "NEWFALSE#36",
+      "kind": "NEWFALSE"
+    },
+    {
+      "children": [
+        {
+          "ref": "BININT1#31"
+        },
+        {
+          "ref": "TUPLE#32"
+        },
+        {
+          "ref": "BUILT#35"
+        },
+        {
+          "ref": "NEWFALSE#36"
+        },
+        {
+          "ref": "REDUCE_RESULT#20"
+        }
+      ],
+      "id": "TUPLE#30",
+      "kind": "TUPLE"
+    }
+  ],
+  "operations": [
+    {
+      "args": {
+        "ref": "TUPLE#2"
+      },
+      "callable": {
+        "ref": "GLOBAL#1"
+      },
+      "offset": 104,
+      "opcode": "REDUCE",
+      "result": {
+        "ref": "REDUCE_RESULT#5"
+      }
+    },
+    {
+      "args": {
+        "ref": "TUPLE#7"
+      },
+      "callable": {
+        "ref": "GLOBAL#6"
+      },
+      "offset": 110,
+      "opcode": "REDUCE",
+      "result": {
+        "ref": "REDUCE_RESULT#11"
+      }
+    },
+    {
+      "args": {
+        "ref": "TUPLE#13"
+      },
+      "callable": {
+        "ref": "GLOBAL#12"
+      },
+      "offset": 152,
+      "opcode": "REDUCE",
+      "result": {
+        "ref": "REDUCE_RESULT#17"
+      }
+    },
+    {
+      "offset": 184,
+      "opcode": "BUILD",
+      "state": {
+        "ref": "TUPLE#21"
+      },
+      "target": {
+        "ref": "REDUCE_RESULT#17"
+      }
+    },
+    {
+      "args": {
+        "ref": "TUPLE#18"
+      },
+      "callable": {
+        "ref": "GLOBAL#1"
+      },
+      "offset": 43851,
+      "opcode": "REDUCE",
+      "result": {
+        "ref": "REDUCE_RESULT#20"
+      }
+    },
+    {
+      "offset": 43857,
+      "opcode": "BUILD",
+      "state": {
+        "ref": "TUPLE#30"
+      },
+      "target": {
+        "ref": "REDUCE_RESULT#11"
+      }
+    }
+  ],
+  "physical_values": "PHYSICAL_OPAQUE",
+  "unsupported": []
+}

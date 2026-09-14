@@ -1,5 +1,6 @@
 import pickle
-from scripts.m1_e2_symbolic import inspect
+import zipfile
+from scripts.m1_e2_symbolic import inspect, authority_graph
 
 def test_symbolic_reduce_build_and_memo_without_execution():
     class P:
@@ -35,3 +36,33 @@ def test_nested_global_tuple_reduce_and_build_identity():
 def test_authority_opcodes_are_not_silently_accepted():
     r=inspect(b'\x80\x02cmod\nfn\n)\x81.')
     assert r['unsupported'] and r['unsupported'][0][1]=='NEWOBJ'
+
+def test_inspect_never_retains_secret_literal_recursively():
+    secret=b'UNIQUE_PHYSICAL_SECRET_9f4c'
+    data=b'\x80\x02X'+len(secret).to_bytes(4,'little')+secret+b'0.'
+    r=inspect(data)
+    def walk(x):
+        if isinstance(x,bytes): assert secret not in x
+        elif isinstance(x,str): assert secret.decode() not in x
+        elif isinstance(x,dict):
+            for k,v in x.items(): walk(k); walk(v)
+        elif isinstance(x,(list,tuple)):
+            for v in x: walk(v)
+    walk(r)
+
+def test_authority_graph_has_stable_operation_records():
+    r=inspect(b'\x80\x02cmod\nfn\n)\x85R.')
+    g=authority_graph(r)
+    assert g['operations'][0]['opcode']=='REDUCE'
+    assert g['operations'][0]['callable']['ref'].startswith('GLOBAL#')
+
+def test_fixed_authority_graph_callable_offsets_are_canonical():
+    p='external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init'
+    with zipfile.ZipFile(p) as z: g=authority_graph(inspect(z.read('archive/data.pkl')))
+    nodes={n['id']:n for n in g['nodes']}
+    ops={x['offset']:x for x in g['operations'] if x['opcode']=='REDUCE'}
+    assert set(ops)=={104,110,152,43851}
+    assert nodes[ops[104]['callable']['ref']]['authority']=='_codecs encode'
+    assert nodes[ops[110]['callable']['ref']]['authority']=='numpy.core.multiarray _reconstruct'
+    assert nodes[ops[152]['callable']['ref']]['authority']=='numpy dtype'
+    assert nodes[ops[43851]['callable']['ref']]['authority']=='_codecs encode'
