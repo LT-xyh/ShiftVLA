@@ -71,4 +71,11 @@ if __name__ == '__main__':
     import pathlib, zipfile, json
     p=pathlib.Path('external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init')
     with zipfile.ZipFile(p) as z: result=inspect(z.read('archive/data.pkl'))
-    print(json.dumps({k:v for k,v in result.items() if k!='events'}, default=str))
+    # Never serialize symbolic ``value`` fields: fixed assets contain physical
+    # simulator state in BINUNICODE/BINBYTES payloads.
+    safe = {'globals': result['globals'],
+            'reducers': [(p, fn.kind, args.kind, out.kind) for p,fn,args,out in result['reducers']],
+            'builds': [(p, target.kind, state.kind) for p,target,state in result['builds']],
+            'unsupported': [(p,n) for p,n,_ in result['unsupported']],
+            'final_stack': result['final_stack'], 'memo_size': result['memo_size']}
+    print(json.dumps(safe, default=str))
