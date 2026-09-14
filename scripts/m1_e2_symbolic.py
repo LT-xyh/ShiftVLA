@@ -9,11 +9,16 @@ class Sym:
     value: object = None
 
 def inspect(data: bytes) -> dict:
-    stack: list[Sym] = []; memo: dict[int, Sym] = {}; events=[]; globals=[]; reducers=[]; builds=[]; unsupported=[]
+    stack: list[Sym] = []; memo: dict[int, Sym] = {}; marks=[]; events=[]; globals=[]; reducers=[]; builds=[]; unsupported=[]
     for op,arg,pos in pickletools.genops(data):
         before=tuple(x.kind for x in stack); reads=[]; writes=[]
         n=op.name
-        if n in ('GLOBAL','STACK_GLOBAL'):
+        if n=='MARK': marks.append(len(stack))
+        elif n=='POP':
+            if stack: stack.pop()
+        elif n=='POP_MARK':
+            if marks: del stack[marks.pop():]
+        elif n in ('GLOBAL','STACK_GLOBAL'):
             if n=='GLOBAL':
                 target=str(arg); stack.append(Sym('GLOBAL',target)); globals.append((pos,n,target))
             else:
@@ -23,10 +28,14 @@ def inspect(data: bytes) -> dict:
             idx=int(arg); memo[idx]=stack[-1] if stack else Sym('MISSING'); writes.append(idx)
         elif n in ('BINGET','LONG_BINGET','GET'):
             idx=int(arg); stack.append(memo.get(idx,Sym('MISSING'))); reads.append(idx)
+        elif n in ('TUPLE','TUPLE1','TUPLE2','TUPLE3'):
+            if n=='TUPLE': start=marks.pop() if marks else 0; vals=stack[start:]; del stack[start:]
+            else: count=int(n[-1]); vals=stack[-count:]; del stack[-count:]
+            stack.append(Sym('TUPLE',tuple(vals)))
         elif n in ('REDUCE',):
             args=stack.pop() if stack else Sym('MISSING'); fn=stack.pop() if stack else Sym('MISSING'); out=Sym('REDUCE_RESULT',(fn,args)); stack.append(out); reducers.append((pos,fn,args,out))
         elif n=='BUILD':
-            state=stack.pop() if stack else Sym('MISSING'); target=stack[-1] if stack else Sym('MISSING'); builds.append((pos,target,state)); stack.append(Sym('BUILT',(target,state)))
+            state=stack.pop() if stack else Sym('MISSING'); target=stack[-1] if stack else Sym('MISSING'); builds.append((pos,target,state)); stack[-1]=Sym('BUILT',(target,state)) if stack else stack.append(Sym('MISSING'))
         elif n in ('NEWOBJ','NEWOBJ_EX','INST','OBJ','EXT1','EXT2','EXT4','PERSID','BINPERSID'):
             unsupported.append((pos,n,arg))
         elif n=='STOP':
