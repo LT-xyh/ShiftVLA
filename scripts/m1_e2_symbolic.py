@@ -8,6 +8,9 @@ class Sym:
     kind: str
     value: object = None
 
+def _opaque(op, arg):
+    return Sym(op, '<opaque>' if isinstance(arg, (bytes, str, int, float)) else None)
+
 def inspect(data: bytes) -> dict:
     stack: list[Sym] = []; memo: dict[int, Sym] = {}; marks=[]; events=[]; globals=[]; reducers=[]; builds=[]; unsupported=[]
     for op,arg,pos in pickletools.genops(data):
@@ -18,6 +21,10 @@ def inspect(data: bytes) -> dict:
             if stack: stack.pop()
         elif n=='POP_MARK':
             if marks: del stack[marks.pop():]
+        elif n in ('NONE','NEWTRUE','NEWFALSE','BININT','BININT1','BININT2','LONG','BINFLOAT','BINUNICODE','SHORT_BINUNICODE','BINBYTES','SHORT_BINBYTES'):
+            stack.append(Sym(n, arg if n not in ('BINBYTES','SHORT_BINBYTES') else '<opaque>'))
+        elif n in ('EMPTY_TUPLE','EMPTY_LIST','EMPTY_DICT','EMPTY_SET'):
+            stack.append(Sym(n[6:].upper() if n!='EMPTY_TUPLE' else 'TUPLE', ()))
         elif n in ('GLOBAL','STACK_GLOBAL'):
             if n=='GLOBAL':
                 target=str(arg); stack.append(Sym('GLOBAL',target)); globals.append((pos,n,target))
@@ -34,6 +41,17 @@ def inspect(data: bytes) -> dict:
             if n=='TUPLE': start=marks.pop() if marks else 0; vals=stack[start:]; del stack[start:]
             else: count=int(n[-1]); vals=stack[-count:]; del stack[-count:]
             stack.append(Sym('TUPLE',tuple(vals)))
+        elif n in ('DUP',):
+            if stack: stack.append(stack[-1])
+            else: unsupported.append((pos,n,arg))
+        elif n in ('LIST','DICT'):
+            start=marks.pop() if marks else 0; vals=stack[start:]; del stack[start:]
+            stack.append(Sym('LIST' if n=='LIST' else 'DICT', tuple(vals)))
+        elif n in ('APPENDS','SETITEMS','ADDITEMS'):
+            start=marks.pop() if marks else len(stack); vals=stack[start:]; del stack[start:]
+            if not stack: unsupported.append((pos,n,arg))
+            else:
+                target=stack.pop(); stack.append(Sym(target.kind, target.value + tuple(vals)))
         elif n in ('REDUCE',):
             args=stack.pop() if stack else Sym('MISSING'); fn=stack.pop() if stack else Sym('MISSING'); out=Sym('REDUCE_RESULT',(fn,args)); stack.append(out); reducers.append((pos,fn,args,out))
         elif n=='BUILD':
