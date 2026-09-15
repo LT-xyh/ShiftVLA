@@ -1,0 +1,20 @@
+{
+  "contract": "M1-SA-v1",
+  "phase": "F1",
+  "status": "BLOCKED",
+  "candidate_budget_used": 2,
+  "candidates": {
+    "cpu_baseline": {
+      "status": "BLOCKED",
+      "reason": "CPU NumPy/Torch bridges PASS, but no current device is reported; required host/device bridge is unavailable.",
+      "evidence": "runs/replayvla-p1/f1-20260915-r2/cpu_baseline.json"
+    },
+    "dcu_policy": {
+      "status": "FAIL",
+      "reason": "Torch emits _ARRAY_API not found warning and NumPy→Torch raises RuntimeError: Numpy is not available.",
+      "evidence": "runs/replayvla-p1/f1-20260915-r2/dcu_policy.json"
+    }
+  },
+  "d3_kill_gate": "TRIGGERED",
+  "next_action": "Stop; do not enter F2 or attempt additional packages without a new route decision."
+}
