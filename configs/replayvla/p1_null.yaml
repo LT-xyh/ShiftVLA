@@ -1,0 +1,96 @@
+schema_version: 1
+name: replayvla_p1_f3a_null
+config_sha256: 1be24b0ef4e41b23af1e231e0243477e33463b3598028a824f9ca1d25836ebd9
+strict_runtime_contract: true
+obs_type: pixels_agent_pos
+state_replay_config:
+  path: configs/m1/state_replay.yaml
+  sha256: 730aff4a41fd91fb837102ca5f363a4a142bf7010140f5176940700f1d1fd5f0
+pair_count: 20
+pair_prefix: m1n0-pair-
+worker_timeout_seconds: 600
+output_root: runs/replayvla-p1/f3a-20260915
+registry: runtime/m1/m1_hard_gate_tape_registry.json
+registry_sha256: 092c64910b7530c6d84a98a925124879e9a96196b54d45b284a70ccfb62dd49c
+action_tape:
+  path: runtime/m1/tapes/libero_spatial-task000-init000.actions.npy
+  sha256: c17bc44ad8195fecb42a80b3b272828761a9df6d88dd2bafe45db01a6cb04bbf
+  shape:
+  - 82
+  - 7
+  dtype: float32
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+runtime:
+  offline: true
+  local_only: true
+  include_policy: false
+  call_policy: false
+  call_processors: false
+  fresh_processes: true
+  retry_count: 0
+  renderer:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: '8'
+    expected_gl:
+      vendor: Mesa/X.org
+      renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+      version: 3.1 Mesa 21.1.5
+quantity_selection:
+  root_patterns:
+  - integration
+  - qpos
+  - qvel
+  - controller
+  - eef_pose
+  - gripper
+  - gripper_physical
+  - objects
+  - contacts
+invariants:
+  required_roots:
+  - integration
+  - qpos
+  - qvel
+  - controller
+  - eef_pose
+  - gripper
+  - gripper_physical
+  - objects
+  - body_xpos
+  - body_xquat
+  - contacts
+  - predicates
+  - success
+  - counters
+  - observables
+  - observable_cache
+terminal_contract:
+  step: 82
+  termination_reason: predicate_transition
+  success: true
+  terminated: true
+  truncated: false
+renderer:
+  camera: agentview
+  observation_key: render_rgb
+  expected_ordinal: 8
+publication:
+  atomic: true
+  no_overwrite: true
+  safe_no_pickle: true
+authority_commit: 10a1288f8d38657a98e876c0f1602ee175797506
+execution_commit: 10a1288f8d38657a98e876c0f1602ee175797506
+input_bindings:
+  init_state_path: external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init
+  init_state_sha256: cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a
+  bddl_path: external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
+  bddl_sha256: 9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b
+governance:
+  f2r_deviation: F2R dynamic run began before all authorized static preconditions;
+    retained FAIL/NONCONFORMANT; never reinterpret as PASS

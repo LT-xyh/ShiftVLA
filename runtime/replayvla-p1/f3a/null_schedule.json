@@ -1,0 +1,16 @@
+{
+  "phase": "F3a",
+  "status": "BLOCKED",
+  "authority_commit": "10a1288f8d38657a98e876c0f1602ee175797506",
+  "config": "configs/replayvla/p1_null.yaml",
+  "config_sha256": "1be24b0ef4e41b23af1e231e0243477e33463b3598028a824f9ca1d25836ebd9",
+  "planned_pairs": 20,
+  "planned_attempts": 40,
+  "completed_pairs": 0,
+  "completed_attempts": 0,
+  "technical_failure_count": 1,
+  "blocking_reason": "prepare_run failed closed: frozen registry source_file is not an actual regular file",
+  "dynamic_execution_started": false,
+  "no_retry_or_replacement": true,
+  "f2r_governance_deviation_retained": true
+}

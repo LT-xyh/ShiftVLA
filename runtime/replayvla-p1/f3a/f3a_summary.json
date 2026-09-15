@@ -1,0 +1,12 @@
+{
+  "phase": "F3a",
+  "status": "BLOCKED",
+  "reason": "Input byte/provenance binding failed during static schedule preparation; no dynamic null attempt was authorized",
+  "attempts": 0,
+  "pairs": 0,
+  "contact_grasp_carried": "UNKNOWN",
+  "exact_discrete_invariants": "UNKNOWN",
+  "physics_envelopes": "UNKNOWN",
+  "renderer_envelopes": "UNKNOWN",
+  "f2r_governance_deviation": "retained; F2R remains FAIL/NONCONFORMANT"
+}

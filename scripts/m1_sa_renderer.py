@@ -99,7 +99,7 @@ def worker(config_path: Path, worker_id: str) -> int:
     env = governed_environment(config)
     construction = render_count = 0
     close_status = "FAIL"
-    config_hash = _canonical_hash(config)
+    config_hash = str(config.get("effective_config_sha256") or _canonical_hash({k: v for k, v in config.items() if k != "effective_config_sha256"}))
     selected_ordinal = config.get("renderer", {}).get("selected_ordinal")
     try:
         import libero.libero as libero_package
