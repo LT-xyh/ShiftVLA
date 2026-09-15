@@ -48,3 +48,10 @@ def test_unapproved_same_opcode_remains_opaque():
     r=extract_structural_metadata(data, asset_sha256=FIXED_ASSET_SHA256, authority_graph=g, allow_paths=())
     assert r['status']=='UNRESOLVED'
     assert all(x['classification'] != 'STRUCTURAL_METADATA' for x in r['fields'])
+
+def test_extra_authority_operation_fails_closed():
+    data=fixed_bytes(); g=authority_graph(inspect(data))
+    bad=json.loads(json.dumps(g))
+    bad['operations'].append({'offset': 999, 'opcode': 'REDUCE', 'callable': {'ref': 'GLOBAL#1'}, 'args': {'ref': 'TUPLE#2'}, 'result': {'ref': 'REDUCE_RESULT#5'}})
+    r=extract_structural_metadata(data, asset_sha256=FIXED_ASSET_SHA256, authority_graph=bad)
+    assert r['status']=='UNRESOLVED'

@@ -31,6 +31,7 @@ _EXPECTED_AUTHORITIES = {
     152: "numpy dtype",
     43851: "_codecs encode",
 }
+_EXPECTED_OFFSETS = frozenset({104, 110, 152, 184, 43851, 43857})
 
 
 def _node_map(graph: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -54,6 +55,8 @@ def _graph_is_canonical(graph: Mapping[str, Any]) -> bool:
     """Validate the exact E2.3 authority topology before reading literals."""
     ops = _ops(graph)
     nodes = _node_map(graph)
+    if set(ops) != _EXPECTED_OFFSETS:
+        return False
     if set(_EXPECTED_AUTHORITIES) - set(ops):
         return False
     for offset, authority in _EXPECTED_AUTHORITIES.items():
