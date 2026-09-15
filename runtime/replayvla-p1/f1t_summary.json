@@ -1,0 +1,24 @@
+{
+  "authority": "docs/replayvla-p1/06_d3_final_runtime_pivot.md",
+  "phase": "F1T",
+  "status": "PASS",
+  "sa_runtime": "tensor-transport-qualified",
+  "runtime_delta": "none",
+  "repetitions": 2,
+  "fresh_processes_per_repetition": 3,
+  "request_sha256": "3d91d0248e41bff9b4472264eefdd2e99a67dd1766119750213b2fe80ee480af",
+  "response_sha256": "2e9b794fe7fce6c4de825efe00772c4268b4b382a6e232f57491daabab0f48af",
+  "device": {
+    "logical": "cuda:0",
+    "name": "K100_AI",
+    "count": 8,
+    "backend": "HIP",
+    "hip_version": "6.3.25405"
+  },
+  "transport": "CPU torch.Tensor -> safetensors -> DCU CPU torch.Tensor -> K100 torch.Tensor -> CPU torch.Tensor -> safetensors -> CPU torch.Tensor",
+  "exact_checks": ["keys", "shape", "dtype", "finite", "deterministic contents", "device roundtrip values", "response schema/content"],
+  "dcu_numpy_bridge_required": false,
+  "production_trace": "runtime/replayvla-p1/f1t_production_path_trace.md",
+  "evidence": "runs/replayvla-p1/f1t-20260915/manifest.json",
+  "next_phase": "F2 NOT AUTHORIZED; await strong review"
+}
