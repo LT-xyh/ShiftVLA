@@ -1,0 +1,17 @@
+{
+  "contract": "M1-SA-v1",
+  "phase": "F0",
+  "authority_head": "ea73b2a6cd23f2caa1a7d50c80162ff3cb765305",
+  "branch": "xyh/replayvla-p1",
+  "evidence_namespaces": ["SA-runtime", "SA-renderer", "SA-null", "SA-physical-replay", "SA-policy-replay"],
+  "phase_state": {"F0": "PASS", "F1": "IN_PROGRESS", "F2": "NOT_AUTHORIZED", "F3": "NOT_AUTHORIZED", "F4": "NOT_AUTHORIZED", "F5": "NOT_AUTHORIZED", "F6": "NOT_AUTHORIZED"},
+  "legacy_boundary": {
+    "old_g1": "BLOCKED",
+    "old_e2": "COVERED / PASS (E2-local)",
+    "old_e3_e6": "NOT_STARTED",
+    "old_g2": "NOT_AUTHORIZED",
+    "legacy_files_modified": false,
+    "verification": "tracked legacy files were hash-compared at F0 against authority HEAD"
+  },
+  "working_tree_note": "Main worktree /public/home/xuyinghao/workspace/vla had pre-existing dirty/untracked files; none were staged or modified."
+}
