@@ -1,0 +1,72 @@
+{
+  "argv": [
+    "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+    "-B",
+    "/public/home/xuyinghao/workspace/replayvla-p1/scripts/m1_sa_renderer.py",
+    "worker",
+    "--config",
+    "runs/replayvla-p1/f2r-20260915/effective_config.json",
+    "--worker-id",
+    "worker-1"
+  ],
+  "cleanup_status": "UNKNOWN",
+  "close_status": "PASS",
+  "construction_observation": "official factory returned; internal init/reset/settle counts not independently observable",
+  "construction_status": "PASS",
+  "effective_config_sha256": "f9be292d057717c1eee2cab7b60c80e9bb3d553a48f1fe42c51c4d774414d9f4",
+  "egl_identity": {
+    "vendor": "Mesa Project",
+    "version": "1.5"
+  },
+  "forbidden_operation_count": 0,
+  "gl_identity": {
+    "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+    "vendor": "Mesa/X.org",
+    "version": "3.1 Mesa 21.1.5"
+  },
+  "parent_observed_exit": true,
+  "pid": 1271968,
+  "public_render_count": 1,
+  "render_metadata": {
+    "dtype": "uint8",
+    "finite": true,
+    "max": 251.0,
+    "min": 0.0,
+    "shape": [
+      360,
+      360,
+      3
+    ]
+  },
+  "replacement": false,
+  "returncode": 0,
+  "runtime_identity": {
+    "OpenGL": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/__init__.py",
+      "version": "3.1.10"
+    },
+    "executable": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+    "mujoco": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/mujoco/__init__.py",
+      "version": "3.7.0"
+    },
+    "numpy": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/numpy/__init__.py",
+      "version": "2.2.6"
+    },
+    "platform": "Linux-4.18.0-348.el8.x86_64-x86_64-with-glibc2.28",
+    "python": "3.12.6 (main, Dec 25 2024, 15:49:08) [GCC 4.8.5 20150623 (Red Hat 4.8.5-44)]",
+    "robosuite": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/__init__.py",
+      "version": "1.4.0"
+    }
+  },
+  "selected_ordinal": 8,
+  "status": "PASS",
+  "stderr_path": "runs/replayvla-p1/f2r-20260915/worker-1.stderr.log",
+  "stderr_sha256": "84de0985bad848755842fe9b5e656db4cf6b89bc080b6c082a0976d76f7cbb31",
+  "stdout_path": "runs/replayvla-p1/f2r-20260915/worker-1.stdout.log",
+  "stdout_sha256": "900163f4db9317f7ec550672da794afb603516f6c360a5b58c2e647d36b3d6f8",
+  "timeout": false,
+  "worker_id": "worker-1"
+}

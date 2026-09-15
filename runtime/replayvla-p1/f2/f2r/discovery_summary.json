@@ -1,0 +1,110 @@
+{
+  "argv": [
+    "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+    "-B",
+    "/public/home/xuyinghao/workspace/replayvla-p1/scripts/m1_sa_renderer.py",
+    "discover"
+  ],
+  "cleanup_status": "UNKNOWN",
+  "devices": [
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 0,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 1,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 2,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 3,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 4,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 5,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 6,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_EXT_device_drm"
+      ],
+      "ordinal": 7,
+      "software": false
+    },
+    {
+      "extensions": [
+        "EGL_MESA_device_software"
+      ],
+      "ordinal": 8,
+      "software": true
+    }
+  ],
+  "environment": {
+    "LIBERO_CONFIG_PATH": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config",
+    "MUJOCO_GL": "egl",
+    "PYOPENGL_PLATFORM": "egl"
+  },
+  "parent_observed_exit": true,
+  "returncode": 0,
+  "runtime_identity": {
+    "OpenGL": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/__init__.py",
+      "version": "3.1.10"
+    },
+    "executable": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+    "mujoco": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/mujoco/__init__.py",
+      "version": "3.7.0"
+    },
+    "numpy": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/numpy/__init__.py",
+      "version": "2.2.6"
+    },
+    "platform": "Linux-4.18.0-348.el8.x86_64-x86_64-with-glibc2.28",
+    "python": "3.12.6 (main, Dec 25 2024, 15:49:08) [GCC 4.8.5 20150623 (Red Hat 4.8.5-44)]",
+    "robosuite": {
+      "file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/__init__.py",
+      "version": "1.4.0"
+    }
+  },
+  "selected_ordinal": 8,
+  "selection_rule": "unique EGL_MESA_device_software candidate",
+  "status": "PASS",
+  "stderr_path": "runs/replayvla-p1/f2r-20260915/discovery.stderr.log",
+  "stderr_sha256": "84de0985bad848755842fe9b5e656db4cf6b89bc080b6c082a0976d76f7cbb31",
+  "stdout_path": "runs/replayvla-p1/f2r-20260915/discovery.stdout.log",
+  "stdout_sha256": "15ad50cb38327684b355a258d31b1ff42896bdbea70ca01e86a48d93638bd9dc",
+  "timeout": false
+}

@@ -1,0 +1,39 @@
+{
+  "F2": "FAIL / ROUTE_REVIEW",
+  "F3": "NOT_AUTHORIZED",
+  "authority": "bf19c5383fa9c24125b8c852c64cd66436f1151d",
+  "discovery_ordinal": 8,
+  "no_further_dynamic_run_authorized": true,
+  "phase": "F2R",
+  "reason": "worker hash canonicalizes config including effective_config_sha256 whereas parent hashes before adding field; cleanup_status is UNKNOWN",
+  "status": "FAIL",
+  "workers": [
+    {
+      "actual_config_hash": "f9be292d057717c1eee2cab7b60c80e9bb3d553a48f1fe42c51c4d774414d9f4",
+      "close_status": "PASS",
+      "ordinal": 8,
+      "parent_observed_exit": true,
+      "render_count": 1,
+      "returncode": 0,
+      "worker_id": "worker-0"
+    },
+    {
+      "actual_config_hash": "f9be292d057717c1eee2cab7b60c80e9bb3d553a48f1fe42c51c4d774414d9f4",
+      "close_status": "PASS",
+      "ordinal": 8,
+      "parent_observed_exit": true,
+      "render_count": 1,
+      "returncode": 0,
+      "worker_id": "worker-1"
+    },
+    {
+      "actual_config_hash": "f9be292d057717c1eee2cab7b60c80e9bb3d553a48f1fe42c51c4d774414d9f4",
+      "close_status": "PASS",
+      "ordinal": 8,
+      "parent_observed_exit": true,
+      "render_count": 1,
+      "returncode": 0,
+      "worker_id": "worker-2"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+contract: M1-SA-v1
+phase: F2R
+namespace: SA-renderer
+parent_authority: bf19c5383fa9c24125b8c852c64cd66436f1151d
+cpu_python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+runtime_lock: runtime/locks/shiftvla-libero-runtime.txt
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+obs_type: pixels_agent_pos
+libero_config:
+  path: /public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config/config.yaml
+assets:
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+renderer:
+  backend: egl
+  software_extension: EGL_MESA_device_software
+  selected_ordinal: null
+  discovery_manifest: null
+environment:
+  LIBERO_CONFIG_PATH: /public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  HF_DATASETS_OFFLINE: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+  MUJOCO_GL: egl
+  PYOPENGL_PLATFORM: egl
+output_root: runs/replayvla-p1/f2
+identity_bindings:
+  runtime_lock_sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
+  init_state:
+    path: /public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init
+    sha256: cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a
+  bddl:
+    path: /public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
+    sha256: 9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b
+  source_to_binary_provenance: NOT_INDEPENDENTLY_ATTESTED
+
+provenance:
+  retained_c5_effective_config_sha256: d9757e9c2f32fd8dbb117690b9d71dff3f9a9d73a9be5dbf5041a56401efa172
+  c5_parent_authority_erratum: 411320d01cdb983b81d1f04a9b378ebe4f634cfe
+  semantic_delta: only authority/provenance/evidence-instrumentation fields differ; renderer-relevant behavior is unchanged

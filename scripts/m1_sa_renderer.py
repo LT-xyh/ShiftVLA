@@ -99,6 +99,8 @@ def worker(config_path: Path, worker_id: str) -> int:
     env = governed_environment(config)
     construction = render_count = 0
     close_status = "FAIL"
+    config_hash = _canonical_hash(config)
+    selected_ordinal = config.get("renderer", {}).get("selected_ordinal")
     try:
         import libero.libero as libero_package
         asset_path = config.get("assets", {}).get("path")
@@ -128,20 +130,25 @@ def worker(config_path: Path, worker_id: str) -> int:
         from lerobot.envs import close_envs
         close_envs(envs)
         close_status = "PASS"
-        return _emit({"status": "PASS", "worker_id": worker_id, "pid": os.getpid(), "runtime_identity": _identity(),
+        return _emit({"status": "PASS", "worker_id": worker_id, "pid": os.getpid(), "effective_config_sha256": config_hash, "selected_ordinal": selected_ordinal, "runtime_identity": _identity(),
                       "construction_status": "PASS", "construction_observation": "official factory returned; internal init/reset/settle counts not independently observable",
                       "public_render_count": render_count, "render_metadata": metadata, "egl_identity": egl_identity,
                       "gl_identity": gl_identity,
                       "close_status": close_status, "forbidden_operation_count": 0, "parent_observed_exit": True, "replacement": False})
     except Exception:
-        return _emit({"status": "FAIL", "worker_id": worker_id, "pid": os.getpid(), "runtime_identity": _identity(),
+        return _emit({"status": "FAIL", "worker_id": worker_id, "pid": os.getpid(), "effective_config_sha256": config_hash, "selected_ordinal": selected_ordinal, "runtime_identity": _identity(),
                       "construction_status": "PASS" if construction else "FAIL", "public_render_count": render_count,
                       "close_status": close_status, "forbidden_operation_count": 0, "parent_observed_exit": True,
                       "replacement": False, "traceback": traceback.format_exc()})
 
 
 def run_step(argv: list[str], out: Path, name: str, env: dict[str, str] | None = None) -> dict[str, Any]:
-    result = subprocess.run(argv, capture_output=True, text=True, env=env)
+    timed_out = False
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        result = subprocess.CompletedProcess(argv, 124, exc.stdout or "", exc.stderr or "timeout")
     stdout, stderr = out / f"{name}.stdout.log", out / f"{name}.stderr.log"
     stdout.write_text(result.stdout); stderr.write_text(result.stderr)
     parsed = None
@@ -149,7 +156,7 @@ def run_step(argv: list[str], out: Path, name: str, env: dict[str, str] | None =
         try: parsed = json.loads(line); break
         except json.JSONDecodeError: pass
     record = parsed or {"status": "FAIL", "traceback": result.stderr}
-    record.update({"argv": argv, "returncode": result.returncode, "stdout_path": str(stdout), "stderr_path": str(stderr),
+    record.update({"argv": argv, "returncode": result.returncode, "timeout": timed_out, "cleanup_status": record.get("cleanup_status", "UNKNOWN"), "stdout_path": str(stdout), "stderr_path": str(stderr),
                    "stdout_sha256": _sha256(stdout), "stderr_sha256": _sha256(stderr), "parent_observed_exit": True})
     return record
 
@@ -157,11 +164,11 @@ def run_step(argv: list[str], out: Path, name: str, env: dict[str, str] | None =
 def adjudicate_workers(discovery: dict[str, Any], effective: dict[str, Any], workers: list[dict[str, Any]]) -> dict[str, Any]:
     status = "PASS"
     reasons = []
-    if discovery.get("status") != "PASS" or not isinstance(discovery.get("selected_ordinal"), int): status, reasons = "BLOCKED", ["discovery"]
+    if discovery.get("status") != "PASS" or discovery.get("selected_ordinal") != 8: status, reasons = "BLOCKED", ["discovery ordinal"]
     if len(workers) != 3 or len({w.get("worker_id") for w in workers}) != 3: status, reasons = "FAIL", ["exactly three unique workers"]
     identities = {(json.dumps(w.get("egl_identity", {}), sort_keys=True), json.dumps(w.get("gl_identity", {}), sort_keys=True)) for w in workers}
     for worker in workers:
-        if worker.get("status") != "PASS" or worker.get("public_render_count") != 1 or worker.get("close_status") != "PASS" or not worker.get("parent_observed_exit") or worker.get("forbidden_operation_count") != 0 or worker.get("replacement"):
+        if (worker.get("status") != "PASS" or worker.get("returncode") != 0 or worker.get("public_render_count") != 1 or worker.get("close_status") != "PASS" or worker.get("cleanup_status", "PASS") != "PASS" or not worker.get("parent_observed_exit") or worker.get("forbidden_operation_count") != 0 or worker.get("replacement") or worker.get("effective_config_sha256") != effective.get("effective_config_sha256") or worker.get("selected_ordinal") != discovery.get("selected_ordinal") or not worker.get("stdout_sha256") or not worker.get("stderr_sha256")):
             status, reasons = "FAIL", ["worker predicate"]
     if len(identities) != 1: status, reasons = "FAIL", ["inconsistent EGL/GL identity"]
     return {"status": status, "reasons": reasons, "discovery": discovery, "effective_config": effective, "workers": workers}

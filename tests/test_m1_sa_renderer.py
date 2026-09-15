@@ -34,12 +34,13 @@ def test_deterministic_selection_requires_exactly_one_candidate():
 
 
 def test_adjudication_requires_three_terminal_pass_and_matching_identity(tmp_path):
-    discovery = {"status": "PASS", "selected_ordinal": 2, "manifest_sha256": "d"}
-    effective = {"config_sha256": "c", "selected_ordinal": 2}
+    discovery = {"status": "PASS", "selected_ordinal": 8, "manifest_sha256": "d"}
+    effective = {"config_sha256": "c", "effective_config_sha256": "c", "selected_ordinal": 8}
     good = [{"worker_id": f"worker-{i}", "status": "PASS", "public_render_count": 1,
              "egl_identity": {"vendor": "v", "version": "1"}, "gl_identity": {"renderer": "r"},
              "close_status": "PASS", "parent_observed_exit": True, "replacement": False,
-             "forbidden_operation_count": 0} for i in range(3)]
+                 "forbidden_operation_count": 0, "returncode": 0, "effective_config_sha256": "c", "selected_ordinal": 8,
+                 "stdout_sha256": "s", "stderr_sha256": "e", "cleanup_status": "PASS"} for i in range(3)]
     assert adjudicate_workers(discovery, effective, good)["status"] == "PASS"
     bad = [dict(good[0]), dict(good[1]), dict(good[2])]
     bad[2]["gl_identity"] = {"renderer": "other"}

@@ -1,0 +1,54 @@
+{
+  "raw_evidence": [
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/adjudication.json",
+      "sha256": "78900d8900630cb8d2c3a8e4bc2a729560c328a0ccffc6dcd669121b73c7d4b3",
+      "size": 14035
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/discovery.stderr.log",
+      "sha256": "84de0985bad848755842fe9b5e656db4cf6b89bc080b6c082a0976d76f7cbb31",
+      "size": 311
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/discovery.stdout.log",
+      "sha256": "15ad50cb38327684b355a258d31b1ff42896bdbea70ca01e86a48d93638bd9dc",
+      "size": 1743
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/effective_config.json",
+      "sha256": "de6417ebfe1d6d7f750f05c84c8079f7aee3649627ff6c523c6eb17519a78687",
+      "size": 2547
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/worker-0.stderr.log",
+      "sha256": "84de0985bad848755842fe9b5e656db4cf6b89bc080b6c082a0976d76f7cbb31",
+      "size": 311
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/worker-0.stdout.log",
+      "sha256": "efa66fe7b93eb88e552a446eff0d6c13552415fefa063350eefbdd0a1fc66444",
+      "size": 1828
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/worker-1.stderr.log",
+      "sha256": "84de0985bad848755842fe9b5e656db4cf6b89bc080b6c082a0976d76f7cbb31",
+      "size": 311
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/worker-1.stdout.log",
+      "sha256": "900163f4db9317f7ec550672da794afb603516f6c360a5b58c2e647d36b3d6f8",
+      "size": 1828
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/worker-2.stderr.log",
+      "sha256": "84de0985bad848755842fe9b5e656db4cf6b89bc080b6c082a0976d76f7cbb31",
+      "size": 311
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2r-20260915/worker-2.stdout.log",
+      "sha256": "5949ebda58ca457e3d28d4630c0a901bd5e4efb0dbd4d7e16afe1d4a9d688644",
+      "size": 1828
+    }
+  ]
+}
