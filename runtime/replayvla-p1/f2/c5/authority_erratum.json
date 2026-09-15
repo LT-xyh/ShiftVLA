@@ -1,0 +1,6 @@
+{
+  "actual_f2_authorization_commit": "ce4e6df13890d6299c4306dbfe96dc00720e3fe7",
+  "future_template_only": true,
+  "historical_c5_parent_authority": "411320d01cdb983b81d1f04a9b378ebe4f634cfe",
+  "statement": "c5 exact config is retained; its erroneous parent authority is not rewritten"
+}

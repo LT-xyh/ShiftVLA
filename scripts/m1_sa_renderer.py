@@ -194,9 +194,15 @@ def main() -> int:
     sub.add_parser("discover")
     w = sub.add_parser("worker"); w.add_argument("--config", type=Path, required=True); w.add_argument("--worker-id", required=True)
     r = sub.add_parser("run"); r.add_argument("--config", type=Path, required=True); r.add_argument("--f1t-predecessor", type=Path, required=True); r.add_argument("--output-root", type=Path, required=True); r.add_argument("--cpu-python", required=True)
+    h = sub.add_parser("re-adjudicate"); h.add_argument("--c5-root", type=Path, required=True); h.add_argument("--package", type=Path, required=True)
     a = p.parse_args()
     if a.cmd == "discover": return discover()
     if a.cmd == "worker": return worker(a.config, a.worker_id)
+    if a.cmd == "re-adjudicate":
+        from scripts.m1_sa_f2h import re_adjudicate
+        result = re_adjudicate(a.c5_root, a.package)
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result["status"] == "PASS" else 2
     return run(a.config, a.f1t_predecessor, a.output_root, a.cpu_python)
 
 

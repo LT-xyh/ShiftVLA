@@ -1,0 +1,48 @@
+{
+  "c5_effective_config_sha256": "d9757e9c2f32fd8dbb117690b9d71dff3f9a9d73a9be5dbf5041a56401efa172",
+  "dynamic_execution": "none; static reads/hashes only",
+  "evidence_classifications": {
+    "dynamic_render": "OBSERVED",
+    "factory_internal_init_reset_settle": "TRUSTED_DEPENDENCY / NOT_OBSERVED",
+    "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED"
+  },
+  "formal_sa_renderer": "PENDING_EVIDENCE_HARDENING",
+  "frozen_selected_ordinal": 8,
+  "governance_deviation": {
+    "no_further_f2_dynamic_cohort_authorized": true,
+    "prior_cohorts": [
+      "f2-20260915",
+      "f2-20260915-c2",
+      "f2-20260915-c3",
+      "f2-20260915-c4"
+    ]
+  },
+  "init_state_binding": "SOURCE_ACCOUNTED under trusted-OS/no-concurrent-replacement assumption; historical worker records do not include per-worker byte-use attestations",
+  "inputs": {
+    "c5_effective_config": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2-20260915-c5/effective_config.json",
+      "sha256": "d9757e9c2f32fd8dbb117690b9d71dff3f9a9d73a9be5dbf5041a56401efa172",
+      "size": 1373
+    },
+    "f1t_summary": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f1t_summary.json",
+      "sha256": "fb36419b1011c33a9a063f33589363dc513facb41d7166d5c1591665c8724362"
+    },
+    "f1t_trace": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f1t_production_path_trace.md",
+      "sha256": "d93cec6ac9b4eb1f10c036f9fab571dcc09370c4a45c46f826c4f3598d482a2a"
+    }
+  },
+  "missing_historical_fields": [
+    "worker_0.effective_config_sha256",
+    "worker_0.selected_ordinal",
+    "worker_1.effective_config_sha256",
+    "worker_1.selected_ordinal",
+    "worker_2.effective_config_sha256",
+    "worker_2.selected_ordinal"
+  ],
+  "phase": "F2H",
+  "runtime_lock_sha256": "921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc",
+  "source_adjudication": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2-20260915-c5/adjudication.json",
+  "status": "BLOCKED"
+}

@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "path": "runtime/replayvla-p1/f2/c5/adjudication.json",
+      "sha256": "90abea38c1a0c91cb0f11c212ed8523411cf7287631eee7cef75aaf2872eec64",
+      "size": 12198
+    },
+    {
+      "path": "runtime/replayvla-p1/f2/c5/authority_erratum.json",
+      "sha256": "9ef6b533a1ca2cc9f32979e63d7f5517e9dab66dc41b40a8c6f804ec7d7b4877",
+      "size": 290
+    },
+    {
+      "path": "runtime/replayvla-p1/f2/c5/discovery_summary.json",
+      "sha256": "9d5058eca37499ecaac0793f6404d99106d35f4cf21781b4d1818b9fe4e09753",
+      "size": 2832
+    },
+    {
+      "path": "runtime/replayvla-p1/f2/c5/effective_config.json",
+      "sha256": "d9757e9c2f32fd8dbb117690b9d71dff3f9a9d73a9be5dbf5041a56401efa172",
+      "size": 1373
+    },
+    {
+      "path": "runtime/replayvla-p1/f2/c5/worker_0_terminal.json",
+      "sha256": "7e2a32d7e54a86d163ee27d8adec75ed4a7233ff6dae9bc410af2365b9c8daa6",
+      "size": 2262
+    },
+    {
+      "path": "runtime/replayvla-p1/f2/c5/worker_1_terminal.json",
+      "sha256": "34de1dac995bda046863b20f956758afe3ddbae17a05ec74006302a88939bf51",
+      "size": 2262
+    },
+    {
+      "path": "runtime/replayvla-p1/f2/c5/worker_2_terminal.json",
+      "sha256": "24053cb1d64f61b92e1a838fc6b1902557c2694674d55a510c7ef0c5b570ce03",
+      "size": 2262
+    }
+  ],
+  "raw_evidence_retained_under": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f2-20260915-c5"
+}

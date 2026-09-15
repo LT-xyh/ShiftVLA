@@ -1,0 +1,39 @@
+{
+  "assets": {
+    "path": "/public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6"
+  },
+  "contract": "M1-SA-v1",
+  "cpu_python": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+  "effective_config_sha256": "11d9de23697ace697992cea1d42be9d6fd52744c6bdf579ec4bc9c029cf32855",
+  "environment": {
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "HF_HUB_OFFLINE": "1",
+    "LIBERO_CONFIG_PATH": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config",
+    "MUJOCO_GL": "egl",
+    "PYOPENGL_PLATFORM": "egl",
+    "TRANSFORMERS_OFFLINE": "1"
+  },
+  "libero_config": {
+    "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config/config.yaml"
+  },
+  "namespace": "SA-renderer",
+  "obs_type": "pixels_agent_pos",
+  "output_root": "runs/replayvla-p1/f2",
+  "parent_authority": "411320d01cdb983b81d1f04a9b378ebe4f634cfe",
+  "phase": "F2",
+  "renderer": {
+    "backend": "egl",
+    "discovery_manifest": "discovery.stdout.log",
+    "selected_ordinal": 8,
+    "software_extension": "EGL_MESA_device_software"
+  },
+  "runtime_lock": "runtime/locks/shiftvla-libero-runtime.txt",
+  "task": {
+    "init_state_id": 0,
+    "seed": 2027,
+    "suite": "libero_spatial",
+    "task_id": 0
+  }
+}
