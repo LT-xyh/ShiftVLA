@@ -5,7 +5,7 @@
   "branch": "xyh/replayvla-p1",
   "evidence_namespaces": ["SA-runtime", "SA-renderer", "SA-null", "SA-physical-replay", "SA-policy-replay"],
   "phase_state": {"F0": "PASS", "F1": "BLOCKED", "F2": "NOT_AUTHORIZED", "F3": "NOT_AUTHORIZED", "F4": "NOT_AUTHORIZED", "F5": "NOT_AUTHORIZED", "F6": "NOT_AUTHORIZED"},
-  "kill_gate": {"name": "D3", "status": "TRIGGERED", "reason": "No qualified candidate: CPU device bridge BLOCKED; DCU NumPy/Torch ABI boundary FAIL."},
+  "kill_gate": {"name": "D3", "status": "TRIGGERED / REVIEWED", "reason": "Compatibility candidate unavailable: NumPy 1.26.4 could not be materialized without network/package source; stop rule fired."},
   "f1_evidence": "runs/replayvla-p1/f1-20260915-r2/manifest.json",
   "legacy_boundary": {
     "old_g1": "BLOCKED",

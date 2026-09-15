@@ -1,10 +1,11 @@
 {
   "contract": "M1-SA-v1",
   "phase": "F1",
-  "candidates": {
+  "baseline_components": {
     "cpu_baseline": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
     "dcu_policy": "/public/home/xuyinghao/tmp/shiftvla-libero-dcu/bin/python"
   },
+  "compatibility_candidate": null,
   "output_namespace": "SA-runtime",
   "forbidden_imports": ["mujoco", "libero", "robosuite", "transformers"]
 }

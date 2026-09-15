@@ -2,19 +2,24 @@
   "contract": "M1-SA-v1",
   "phase": "F1",
   "status": "BLOCKED",
-  "candidate_budget_used": 2,
-  "candidates": {
-    "cpu_baseline": {
-      "status": "BLOCKED",
-      "reason": "CPU NumPy/Torch bridges PASS, but no current device is reported; required host/device bridge is unavailable.",
-      "evidence": "runs/replayvla-p1/f1-20260915-r2/cpu_baseline.json"
-    },
-    "dcu_policy": {
-      "status": "FAIL",
-      "reason": "Torch emits _ARRAY_API not found warning and NumPy→Torch raises RuntimeError: Numpy is not available.",
-      "evidence": "runs/replayvla-p1/f1-20260915-r2/dcu_policy.json"
-    }
+  "baseline_components": {
+    "cpu_simulator_host_bridge": "PASS",
+    "dcu_policy_runtime_device_bridge": "FAIL"
   },
-  "d3_kill_gate": "TRIGGERED",
-  "next_action": "Stop; do not enter F2 or attempt additional packages without a new route decision."
+  "compatibility_candidate": {
+    "requested_delta": "NumPy 2.2.6 -> 1.26.4",
+    "status": "CANDIDATE_UNAVAILABLE / BLOCKED",
+    "method": "new isolated Python 3.11 system-site-packages venv; pip install --no-deps numpy==1.26.4",
+    "reason": "pip proxy connection refused and no local NumPy 1.26.4 wheel/cache was available; original DCU venv untouched.",
+    "budget_used": 1
+  },
+  "baseline_evidence": {
+    "cpu": "runs/replayvla-p1/f1-20260915-r2/cpu_baseline.json",
+    "dcu": "runs/replayvla-p1/f1-20260915-r2/dcu_policy.json",
+    "identity": "runs/replayvla-p1/f1-compat-20260915/baseline_identity.txt",
+    "pip_freeze": "runs/replayvla-p1/f1-compat-20260915/baseline_pip_freeze.txt",
+    "pip_check": "runs/replayvla-p1/f1-compat-20260915/baseline_pip_check.txt"
+  },
+  "d3_kill_gate": "TRIGGERED / REVIEWED",
+  "next_action": "Stop at F1; return route-level PIVOT review. Do not enter F2 or try another runtime delta."
 }

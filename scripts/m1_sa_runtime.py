@@ -74,7 +74,10 @@ def qualify(config: Path, output_root: Path) -> int:
         raise ValueError("config must declare M1-SA-v1/F1")
     output_root.mkdir(parents=True, exist_ok=False)
     records = []
-    for candidate, executable in spec["candidates"].items():
+    components = spec.get("baseline_components", {})
+    candidates = spec.get("compatibility_candidate") or {}
+    runs = {**components, **candidates}
+    for candidate, executable in runs.items():
         p = subprocess.run([executable, "-c", PROBE], text=True, capture_output=True)
         record = {"candidate": candidate, "executable": executable,
                   "returncode": p.returncode, "stdout": p.stdout,
@@ -93,7 +96,10 @@ def qualify(config: Path, output_root: Path) -> int:
         else:
             conclusions[r["candidate"]] = "PASS"
     manifest = {"contract": "M1-SA-v1", "phase": "F1", "namespace": spec["output_namespace"],
-                "candidates": [r["candidate"] for r in records], "records": [f"{r['candidate']}.json" for r in records],
+                "baseline_components": list(components),
+                "compatibility_candidate": list(candidates),
+                "compatibility_budget_used": 1 if candidates else 0,
+                "records": [f"{r['candidate']}.json" for r in records],
                 "conclusions": conclusions}
     (output_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return 0
