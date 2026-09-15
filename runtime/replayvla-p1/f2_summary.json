@@ -1,0 +1,37 @@
+{
+  "contract": "M1-SA-v1",
+  "phase": "F2",
+  "status": "PASS",
+  "namespace": "SA-renderer",
+  "cohort": "f2-20260915-c5",
+  "discovery": {
+    "status": "PASS",
+    "selection_rule": "unique EGL_MESA_device_software candidate",
+    "selected_ordinal": 8,
+    "device_count": 9,
+    "evidence": "runs/replayvla-p1/f2-20260915-c5/discovery.stdout.log"
+  },
+  "effective_config": "runs/replayvla-p1/f2-20260915-c5/effective_config.json",
+  "workers": {
+    "planned": 3,
+    "completed": 3,
+    "fresh_processes": true,
+    "construction": "3/3 PASS",
+    "public_render_calls": "3/3 exactly 1",
+    "close_destroy": "3/3 PASS",
+    "normal_parent_observed_exit": "3/3",
+    "forbidden_operation_count": 0,
+    "replacement_or_retry": false,
+    "identity": {
+      "egl_vendor": "Mesa Project",
+      "egl_version": "1.5",
+      "gl_vendor": "Mesa/X.org",
+      "gl_renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+      "gl_version": "3.1 Mesa 21.1.5"
+    }
+  },
+  "worker_evidence": "runs/replayvla-p1/f2-20260915-c5/adjudication.json",
+  "prior_failed_cohorts_preserved": ["f2-20260915", "f2-20260915-c2", "f2-20260915-c3", "f2-20260915-c4"],
+  "source_to_binary_provenance": "NOT_INDEPENDENTLY_ATTESTED",
+  "next_phase": "F3 NOT AUTHORIZED; await GitHub review"
+}
