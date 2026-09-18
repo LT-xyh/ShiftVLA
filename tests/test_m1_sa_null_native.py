@@ -564,3 +564,163 @@ def test_partial_schedule_publication_is_blocked_and_not_runnable(tmp_path, monk
     assert summary["f3n"]["schedule_publication"]["runnable"] is False
     assert summary["f3n"]["schedule_publication"]["null_schedule"]["published"] is True
     assert summary["f3n"]["schedule_publication"]["pair_registry"]["published"] is False
+
+
+
+def test_generic_attempt_failure_defaults_to_unknown():
+    from scripts import m1_null_calibration as nullcal
+
+    failure = nullcal._attempt_failure(
+        {"attempt_id": "x", "pair_id": "p", "side": "A"},
+        RuntimeError("generic failure"),
+    )
+    assert failure["failure_stage"] == "UNKNOWN"
+    assert failure["protocol"]["construction_reset_count"] == 0
+
+
+def test_close_failure_after_completed_attempt_is_postconstruction(monkeypatch):
+    from scripts import m1_null_calibration as nullcal
+
+    class FakeAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def step(self, _action):
+            self.calls += 1
+            return ({}, 0.0, self.calls == 82, False, {"termination_reason": "predicate_transition"})
+
+        def close(self):
+            raise RuntimeError("cleanup failed")
+
+    sentinel_protocol = {
+        "construction_reset_count": 3,
+        "actions_executed": 82,
+        "step_calls": 82,
+    }
+    monkeypatch.setattr(nullcal, "_window_map_from_registry", lambda _attempt: [])
+    monkeypatch.setattr(nullcal, "_adapter_snapshot", lambda _adapter: {})
+    monkeypatch.setattr(nullcal, "_adapter_rgb", lambda _adapter: None)
+    monkeypatch.setattr(nullcal, "_terminal_reason_evidence", lambda *_args, **_kwargs: (
+        "predicate_transition", {"source": "fake", "returned_step": True}
+    ))
+    monkeypatch.setattr(nullcal, "_terminal_success", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(nullcal, "_derive_terminal_reason", lambda reason, **_kwargs: (
+        reason, {"source": "fake"}
+    ))
+    monkeypatch.setattr(nullcal, "_validate_terminal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(nullcal, "_runtime_fingerprint", lambda *_args, **_kwargs: {"fake": True})
+    monkeypatch.setattr(nullcal, "_protocol_counters", lambda *_args, **_kwargs: copy.deepcopy(sentinel_protocol))
+    monkeypatch.setattr(nullcal, "_proc_start_identity", lambda _pid: "123:456:fake")
+
+    attempt = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+        "trace_id": "fake-trace",
+        "config": {"strict_runtime_contract": False},
+        "tape": np.zeros((82, 7), dtype=np.float32),
+        "terminal_contract": {
+            "step": 82,
+            "termination_reason": "predicate_transition",
+            "success": True,
+            "terminated": True,
+            "truncated": False,
+        },
+    }
+    result = nullcal.execute_attempt(attempt, adapter_factory=lambda _config: FakeAdapter())
+    assert result["status"] == "failed"
+    assert result["failure_stage"] == "POST_CONSTRUCTION"
+    assert result["protocol"] == sentinel_protocol
+    assert result["protocol"]["construction_reset_count"] == 3
+
+
+def test_parent_timeout_is_unknown_and_triggers_failfast(tmp_path, monkeypatch):
+    from scripts import m1_null_calibration as nullcal
+
+    attempt = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+        "output_root": str(tmp_path),
+        "worker_timeout_seconds": 1,
+    }
+
+    def timeout(*_args, **_kwargs):
+        raise nullcal.subprocess.TimeoutExpired(
+            cmd=["python", "worker"],
+            timeout=1,
+            output="partial stdout",
+            stderr="partial stderr",
+        )
+
+    monkeypatch.setattr(nullcal.subprocess, "run", timeout)
+    failure = nullcal._default_process_runner(attempt)
+    assert failure["failure_stage"] == "UNKNOWN"
+    assert failure["protocol"]["construction_reset_count"] == 0
+
+    runner = native.FailFastProcessRunner(lambda _request: failure)
+    runner(attempt)
+    assert runner.blocked is True
+    assert runner.dynamic_launches == 1
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "failed", "error": "missing stage"},
+    {"status": "failed", "failure_stage": "not-a-valid-stage", "error": "invalid stage"},
+])
+def test_unknown_or_missing_failure_stage_triggers_failfast(payload):
+    runner = native.FailFastProcessRunner(lambda _request: copy.deepcopy(payload))
+    runner({"attempt_id": "x", "pair_id": "p", "side": "A"})
+    assert runner.blocked is True
+    assert runner.dynamic_launches == 1
+
+
+def test_parent_integrity_failure_after_completed_worker_is_postconstruction():
+    from scripts import m1_null_calibration as nullcal
+
+    sentinel_protocol = {
+        "construction_reset_count": 5,
+        "actions_executed": 82,
+        "step_calls": 82,
+    }
+    request = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+    }
+    worker = {
+        **request,
+        "status": "completed",
+        "protocol": copy.deepcopy(sentinel_protocol),
+        "reset_provenance": {"source": "worker"},
+        # Intentionally missing output_sha256.
+    }
+    failure = nullcal._finalize_process_result(worker, request, strict=True)
+    assert failure["status"] == "failed"
+    assert failure["failure_stage"] == "POST_CONSTRUCTION"
+    assert failure["worker_result_status"] == "completed"
+    assert failure["protocol"] == sentinel_protocol
+    assert failure["protocol"]["construction_reset_count"] == 5
+    assert failure["reset_provenance"] == {"source": "worker"}
+
+
+def test_parent_binding_preserves_worker_failure_stage_and_protocol():
+    from scripts import m1_null_calibration as nullcal
+
+    request = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+    }
+    worker = {
+        "attempt_id": "wrong",
+        "pair_id": request["pair_id"],
+        "side": request["side"],
+        "status": "failed",
+        "failure_stage": "POST_CONSTRUCTION",
+        "protocol": {"construction_reset_count": 9},
+        "error": "worker-side failure",
+    }
+    failure = nullcal._bind_worker_result(worker, request)
+    assert failure["failure_stage"] == "POST_CONSTRUCTION"
+    assert failure["protocol"]["construction_reset_count"] == 9

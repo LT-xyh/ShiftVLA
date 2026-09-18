@@ -58,6 +58,7 @@ DEFAULT_QUANTITY_ROOTS = ("qpos", "qvel", "objects", "gripper_physical")
 DEFAULT_CAMERA = "agentview"
 DEFAULT_RENDER_KEY = "render_rgb"
 DEFAULT_WORKER_TIMEOUT_SECONDS = 600.0
+FAILURE_STAGES = frozenset({"PRE_CONSTRUCTION", "POST_CONSTRUCTION", "UNKNOWN"})
 # These are the names emitted by the pinned LeRobot LIBERO adapter after its
 # official camera-name mapping.  The path is retained in evidence, while the
 # camera group is resolved from the leaf rather than guessed from a requested
@@ -3077,7 +3078,14 @@ def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step:
     return values
 
 
-def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict[str, Any]:
+def _attempt_failure(
+    attempt: Mapping[str, Any],
+    error: Exception | str,
+    *,
+    failure_stage: str = "UNKNOWN",
+) -> dict[str, Any]:
+    if failure_stage not in FAILURE_STAGES:
+        failure_stage = "UNKNOWN"
     try:
         identity = _proc_start_identity(os.getpid())
     except Exception:
@@ -3101,7 +3109,7 @@ def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict
         "pair_id": attempt.get("pair_id"),
         "side": attempt.get("side"),
         "status": "failed",
-        "failure_stage": "PRE_CONSTRUCTION",
+        "failure_stage": failure_stage,
         "error": f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error),
         "pid": os.getpid(),
         "ppid": os.getppid(),
@@ -3324,11 +3332,10 @@ def execute_attempt(
                     raise ProtocolError("worker runtime facts differ from frozen runtime contract")
         result["output_sha256"] = payload_sha256(result)
     except Exception as exc:
-        result = _attempt_failure(attempt, exc)
+        result = _attempt_failure(attempt, exc, failure_stage=failure_stage)
         # Failure-stage classification is orchestration metadata only.  Never
         # rewrite construction_reset_count, reset provenance, or protocol
         # counters to drive F3N cohort control.
-        result["failure_stage"] = failure_stage
     finally:
         close_evidence: dict[str, Any]
         if adapter is not None:
@@ -3364,10 +3371,15 @@ def execute_attempt(
                 "error": "adapter was not constructed",
             }
         if result is None:
-            result = _attempt_failure(attempt, "worker produced no attempt result")
+            result = _attempt_failure(
+                attempt,
+                "worker produced no attempt result",
+                failure_stage=failure_stage,
+            )
         result["close_evidence"] = close_evidence
         if not close_evidence["success"] and result.get("status") == "completed":
             result["status"] = "failed"
+            result["failure_stage"] = "POST_CONSTRUCTION"
             result["error"] = f"close cleanup failed: {close_evidence.get('error', 'unknown error')}"
         elif not close_evidence["success"] and close_evidence.get("error"):
             result["error"] = (
@@ -3792,14 +3804,24 @@ def _finalize_process_result(
     normalized = _json_restore(dict(result))
     if normalized.get("status") is None:
         normalized["status"] = "completed" if normalized.get("terminal") else "failed"
+    if normalized.get("status") != "completed":
+        observed_stage = normalized.get("failure_stage")
+        if not isinstance(observed_stage, str) or observed_stage not in FAILURE_STAGES:
+            normalized["failure_stage"] = "UNKNOWN"
     if normalized.get("status") == "completed" and "output_sha256" not in normalized:
         if strict:
             failure = _attempt_failure(
                 request,
                 ProtocolError("completed worker result is missing output_sha256"),
+                failure_stage="POST_CONSTRUCTION",
             )
-            # Preserve the independently written result/log references.  Do
-            # not retain the full trajectory in the parent failure record.
+            # A completed worker proves construction/trajectory completion.
+            # Preserve scientific protocol evidence while omitting the full
+            # trajectory from the parent-side integrity failure record.
+            if isinstance(normalized.get("protocol"), Mapping):
+                failure["protocol"] = copy.deepcopy(dict(normalized["protocol"]))
+            if "reset_provenance" in normalized:
+                failure["reset_provenance"] = copy.deepcopy(normalized["reset_provenance"])
             if isinstance(normalized.get("worker_transport"), Mapping):
                 failure["worker_transport"] = copy.deepcopy(normalized["worker_transport"])
             failure["worker_result_status"] = "completed"
@@ -3822,7 +3844,22 @@ def _bind_worker_result(result: Mapping[str, Any], request: Mapping[str, Any]) -
         if result.get(name) is not None and result.get(name) != value
     ]
     if mismatches:
-        failure = _attempt_failure(request, ProtocolError("worker identity mismatch: " + "; ".join(mismatches)))
+        worker_stage = result.get("failure_stage")
+        if result.get("status") == "completed":
+            failure_stage = "POST_CONSTRUCTION"
+        elif isinstance(worker_stage, str) and worker_stage in FAILURE_STAGES:
+            failure_stage = worker_stage
+        else:
+            failure_stage = "UNKNOWN"
+        failure = _attempt_failure(
+            request,
+            ProtocolError("worker identity mismatch: " + "; ".join(mismatches)),
+            failure_stage=failure_stage,
+        )
+        if isinstance(result.get("protocol"), Mapping):
+            failure["protocol"] = copy.deepcopy(dict(result["protocol"]))
+        if "reset_provenance" in result:
+            failure["reset_provenance"] = copy.deepcopy(result["reset_provenance"])
         failure["worker_result"] = copy.deepcopy(dict(result))
         return failure
     bound = copy.deepcopy(dict(result))
@@ -3922,11 +3959,13 @@ def _default_process_runner(attempt: Mapping[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             result = {
                 "status": "failed",
+                "failure_stage": "UNKNOWN",
                 "error": f"worker result file is invalid: {type(exc).__name__}: {exc}",
             }
     else:
         result = {
             "status": "failed",
+            "failure_stage": "UNKNOWN",
             "error": "worker did not publish its dedicated result file",
         }
     result["worker_transport"] = transport
