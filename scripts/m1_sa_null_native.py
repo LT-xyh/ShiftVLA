@@ -359,9 +359,15 @@ def runtime_identity_audit(
     if errors:
         raise NativeQualificationError("trusted dependency identity drift: " + "; ".join(errors))
 
+    facts = {
+        "python": observed.get("python"),
+        **{str(key): str(row.get("version")) for key, row in actual_rows.items()},
+    }
     identity = {
         "contract": NATIVE_CONTRACT,
+        "python_executable": python_path,
         "python": {"executable": python_path, "version": observed.get("python")},
+        "facts": facts,
         "runtime_lock": static["runtime_lock"],
         "dependencies": dict(actual_rows),
         "environment": {str(k): str(v) for k, v in runtime_env.items()},
