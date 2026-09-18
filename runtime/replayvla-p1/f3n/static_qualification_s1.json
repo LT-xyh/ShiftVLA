@@ -1,0 +1,182 @@
+{
+  "authority_commit": "3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8",
+  "config_file_sha256": "70bd8f2e0efa899eb6a570ede467f52761e89423f78b9069bcde02110cc9e1a1",
+  "config_path": "/public/home/xuyinghao/workspace/replayvla-p1/configs/replayvla/p1_sa_null_native.yaml",
+  "execution_commit": "15a2176ac0ea08884a48d135b1b8fba519d52c75",
+  "legacy_state_replay_consulted": false,
+  "phase": "F3N-static",
+  "policy_or_processor_import_authorized": false,
+  "runtime_identity": {
+    "contract": "m1_sa_native_v1",
+    "dependencies": {
+      "lerobot": {
+        "distribution": "lerobot",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "lerobot",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/lerobot/__init__.py",
+        "module_file_sha256": "9de5fe33e0bf693e86e9bf55360942385a504a1baff224577a405ca91ea33838",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "0.6.1"
+      },
+      "libero": {
+        "distribution": "hf-libero",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "libero",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/libero/__init__.py",
+        "module_file_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "0.1.4"
+      },
+      "mujoco": {
+        "distribution": "mujoco",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "mujoco",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/mujoco/__init__.py",
+        "module_file_sha256": "f8e5b528617004b6215e16cb0c945faf1f8c7b5d798e5b92e3aabce19c838497",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "3.7.0"
+      },
+      "numpy": {
+        "distribution": "numpy",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "numpy",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/numpy/__init__.py",
+        "module_file_sha256": "6ae17b070c0f70a8e3cad89a510a256942e5a1f37ea5feb120cec167ed2a6236",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "2.2.6"
+      },
+      "pyopengl": {
+        "distribution": "PyOpenGL",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "OpenGL",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/OpenGL/__init__.py",
+        "module_file_sha256": "ba2435443911e23bc9033a366ba1e8e2e4160913c8e7952594ad1a18d7309f7d",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "3.1.10"
+      },
+      "robosuite": {
+        "distribution": "robosuite",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "robosuite",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/robosuite/__init__.py",
+        "module_file_sha256": "3139a789f00b56c25372069be8d99ebaa67bd06f59425acd207ea84acb8cef69",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "1.4.0"
+      },
+      "torch": {
+        "distribution": "torch",
+        "distribution_location": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages",
+        "evidence_class": "TRUSTED_DEPENDENCY",
+        "module": "torch",
+        "module_file": "/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/torch/__init__.py",
+        "module_file_sha256": "0387d8b811b289287479c8bfdf4e1dac3a71b246f938d82da1331cf2dc8bf001",
+        "source_to_binary": "NOT_INDEPENDENTLY_ATTESTED",
+        "version": "2.11.0+cpu"
+      }
+    },
+    "environment": {
+      "HF_DATASETS_OFFLINE": "1",
+      "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+      "HF_HUB_DISABLE_TELEMETRY": "1",
+      "HF_HUB_OFFLINE": "1",
+      "LIBERO_CONFIG_PATH": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config",
+      "MUJOCO_EGL_DEVICE_ID": "8",
+      "MUJOCO_GL": "egl",
+      "PYOPENGL_PLATFORM": "egl",
+      "TRANSFORMERS_OFFLINE": "1"
+    },
+    "evidence_class": "OBSERVED_RUNTIME_IDENTITY",
+    "expected_gl": {
+      "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
+      "vendor": "Mesa/X.org",
+      "version": "3.1 Mesa 21.1.5"
+    },
+    "facts": {
+      "lerobot": "0.6.1",
+      "libero": "0.1.4",
+      "mujoco": "3.7.0",
+      "numpy": "2.2.6",
+      "pyopengl": "3.1.10",
+      "python": "3.12.6",
+      "robosuite": "1.4.0",
+      "torch": "2.11.0+cpu"
+    },
+    "python": {
+      "executable": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+      "version": "3.12.6"
+    },
+    "python_executable": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+    "runtime_lock": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/locks/shiftvla-libero-runtime.txt",
+      "sha256": "921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc",
+      "size": 6828
+    }
+  },
+  "static_inputs": {
+    "action_semantic_sha256": "c17bc44ad8195fecb42a80b3b272828761a9df6d88dd2bafe45db01a6cb04bbf",
+    "assets": {
+      "asset_root": "/public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6",
+      "failures": [],
+      "file_count": 586,
+      "manifest": {
+        "expected_sha256": "1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85",
+        "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/manifests/m0_preflight_b_artifacts.json",
+        "sha256": "1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85"
+      },
+      "repo_id": "lerobot/libero-assets",
+      "revision": "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6",
+      "status": "PASS",
+      "total_bytes": 422320936,
+      "verified_file_count": 586
+    },
+    "bddl": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl",
+      "sha256": "9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b",
+      "size": 3035
+    },
+    "contract": "m1_sa_native_v1",
+    "datasets": {
+      "classification": "NOT_USED_ON_TRACED_F3N_POLICY_FREE_PATH",
+      "path": "/public/home/xuyinghao/workspace/vla/external/datasets"
+    },
+    "init_state": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init",
+      "sha256": "cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a",
+      "size": 44271
+    },
+    "libero_checkout": {
+      "git_sha": "8561c60eea2fb93096146f240194649df73d8b1e",
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero"
+    },
+    "libero_config": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config/config.yaml",
+      "sha256": "743d98647daf57c0cd4e3f54db3ca11f8c93ec326ff1627b606fc9960fab02ba",
+      "size": 484
+    },
+    "missing_source_checkouts_are_not_gates": [
+      "external/lerobot",
+      "external/robosuite",
+      "external/mujoco"
+    ],
+    "python": "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python",
+    "recovery_manifest": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f3a/provenance_v2/recovery_manifest.json",
+      "sha256": "199727291427d01b8c6b258322897dd47689f788572197488bfcfd53dd142b6b",
+      "size": 1361
+    },
+    "registry_sha256": "2be994dc8915b53b9fb94b5a55fa5d95e13979ea21d6a5aba6112a1611f66608",
+    "runtime_lock": {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/locks/shiftvla-libero-runtime.txt",
+      "sha256": "921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc",
+      "size": 6828
+    },
+    "status": "PASS"
+  },
+  "status": "PASS"
+}
