@@ -3,7 +3,7 @@
 Status: F3N EXECUTION AUTHORIZED
 Branch: xyh/replayvla-p1
 Scientific authority: docs/replayvla-p1/13_f3_native_sa_runtime_pivot.md
-Authority commit: 3902dea1879a4bdf3fbb7407cdcdbe876cf3013f30
+Authority commit: 3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8
 
 ## Validated implementation
 
