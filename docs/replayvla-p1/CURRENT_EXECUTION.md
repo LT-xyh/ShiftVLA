@@ -1,9 +1,30 @@
 # ReplayVLA-P1 CURRENT EXECUTION
 
-Status: F3N EXECUTION AUTHORIZED
+Status: F3N-S1 STATIC REQUALIFICATION AUTHORIZED
 Branch: xyh/replayvla-p1
-Scientific authority: docs/replayvla-p1/13_f3_native_sa_runtime_pivot.md
-Authority commit: 3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8
+
+Primary route authority:
+- docs/replayvla-p1/13_f3_native_sa_runtime_pivot.md
+- authority commit: 3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8
+
+Latest adjudication:
+- docs/replayvla-p1/14_f3n_static_entrypoint_adjudication.md
+
+## Historical blocked evidence
+
+The first F3N static invocation is immutable history:
+
+- evidence commit: 8912b5cc19e2fd780204977a402ccb1dbb9c5633
+- evidence: runtime/replayvla-p1/f3n/static_qualification.json
+- status: BLOCKED
+- reason: ModuleNotFoundError: No module named 'scripts'
+- dynamic cohort: NOT STARTED
+
+Do not overwrite or delete this evidence.
+
+The blocker was adjudicated as a Python direct-file entrypoint/package-resolution defect,
+not evidence that the trusted installed runtime, renderer, official environment, or null
+dynamics failed.
 
 ## Validated implementation
 
@@ -11,70 +32,25 @@ Validated implementation commit:
 
 `f2331a203b2a8abaefc57b5ef684706bcdf83a4b`
 
-Runtime validation on the real repository/runtime completed with:
+Runtime validation already completed:
 
-- Python compile: PASS
-- `tests/test_m1_sa_null_native.py`: 35 passed
-- `tests/test_m1_null_calibration.py`: 71 passed in 29.64s
+- py_compile: PASS
+- tests/test_m1_sa_null_native.py: 35 passed
+- tests/test_m1_null_calibration.py: 71 passed in 29.64s
 - renderer/F1T regression: 10 passed
-- committed-range `git diff --check`: PASS
+- committed-range git diff --check: PASS
 - no tracked worktree modifications
-- pre-existing untracked `runs/replayvla-p1/` preserved
 
-The validated implementation was fast-forwarded into `xyh/replayvla-p1`.
-This handoff update is documentation-only and does not alter the validated runtime code.
-
-Do not rerun the validation suites unless a tracked implementation/config file changes.
+Do not repeat those validation suites unless tracked implementation/config files change.
 
 ## Goal
 
-Execute the single authorized M1-SA-native null qualification (F3N).
+Run exactly one bounded static requalification, F3N-S1, using module entry.
 
-Sequence:
+If and only if F3N-S1 is PASS, execute the already-authorized single F3N dynamic cohort
+in the same unchanged execution commit.
 
-1. synchronize to current `origin/xyh/replayvla-p1`;
-2. verify no unexpected tracked modifications;
-3. run F3N static qualification exactly once;
-4. if and only if static qualification is PASS, run the single F3N dynamic cohort;
-5. publish/commit compact evidence;
-6. stop. F3b remains unauthorized.
-
-## Immutable route rules
-
-F3N does NOT execute `configs/m1/state_replay.yaml`.
-
-Missing source checkouts for installed:
-- LeRobot
-- robosuite
-- MuJoCo
-
-are not gates. These installed packages are `TRUSTED_DEPENDENCY` with
-source-to-binary provenance `NOT_INDEPENDENTLY_ATTESTED`.
-
-The F3N static qualifier DOES bind:
-- exact CPU interpreter/runtime lock;
-- installed dependency versions/origins;
-- pinned LIBERO checkout;
-- exact ReplayVLA-P1 LIBERO config;
-- exact BDDL/init-state;
-- exact recovered registry/action semantic bytes;
-- exact frozen LIBERO asset manifest and all frozen asset file bytes.
-
-## Forbidden
-
-Do not:
-- modify/install/uninstall packages;
-- create missing third-party source checkouts;
-- modify implementation/config/tests;
-- use policy/checkpoint inference;
-- construct/call processors;
-- use replay capture/restore;
-- run camera intervention;
-- enter F3b;
-- retry or replace failed F3N attempts;
-- create another F3N runtime/cohort;
-- reset/clean unrelated user files;
-- use `git add -A`.
+If F3N-S1 is BLOCKED/FAIL, stop. No F3N-S2 is authorized.
 
 ## Start
 
@@ -85,7 +61,6 @@ GIT_SSH_COMMAND='ssh -F /dev/null -i /public/home/xuyinghao/.ssh/shiftvla_github
 git fetch origin
 
 git checkout xyh/replayvla-p1
-
 git merge --ff-only origin/xyh/replayvla-p1
 
 git rev-parse HEAD
@@ -96,63 +71,71 @@ Known pre-existing untracked `runs/replayvla-p1/` is allowed.
 
 If any tracked file is unexpectedly modified, STOP without reset/clean.
 
-Record the current HEAD. That HEAD is the F3N execution commit and must not change between static qualification and dynamic execution.
+Record the current HEAD. It must remain unchanged between F3N-S1 static PASS and
+dynamic startup.
 
-## Gate 1: F3N static qualification
+## Gate 1: F3N-S1 static qualification
 
-Run exactly once:
+Run exactly once, from repository root, using module entry:
 
 ~~~bash
 /public/home/xuyinghao/tmp/shiftvla-libero/bin/python -B \
-  scripts/m1_sa_null_native.py qualify \
+  -m scripts.m1_sa_null_native qualify \
   --config configs/replayvla/p1_sa_null_native.yaml \
-  --output runtime/replayvla-p1/f3n/static_qualification.json
+  --output runtime/replayvla-p1/f3n/static_qualification_s1.json
 ~~~
 
-This is allowed to inspect/import the pinned installed CPU runtime and hash frozen assets.
+Do NOT use:
+
+`python scripts/m1_sa_null_native.py ...`
+
+Static qualification may inspect/import the pinned CPU runtime and hash frozen assets.
 It must not construct the LIBERO environment or create an EGL context.
 
-If static qualification returns BLOCKED/FAIL:
+If F3N-S1 returns BLOCKED/FAIL:
 
-- STOP;
-- do not run `execute`;
+- STOP immediately;
+- do not run dynamic;
 - do not repair in Codex;
-- preserve the generated compact evidence;
-- commit only the generated compact F3N evidence;
-- push and return to Web GPT.
+- do not modify implementation/config/packages;
+- do not create F3N-S2;
+- preserve both static qualification evidence files;
+- commit/push only new compact evidence;
+- return to reviewer for route-level PIVOT review.
 
-## Gate 2: single F3N cohort
+## Gate 2: single F3N dynamic cohort
 
-Only if Gate 1 is PASS, execute exactly once:
+Only after F3N-S1 PASS, and without committing/changing HEAD in between:
 
 ~~~bash
 /public/home/xuyinghao/tmp/shiftvla-libero/bin/python -B \
-  scripts/m1_sa_null_native.py execute \
+  -m scripts.m1_sa_null_native execute \
   --config configs/replayvla/p1_sa_null_native.yaml \
-  --qualification runtime/replayvla-p1/f3n/static_qualification.json
+  --qualification runtime/replayvla-p1/f3n/static_qualification_s1.json
 ~~~
 
-The runner owns:
-- frozen 20-pair / 40-attempt schedule;
-- compact schedule publication;
-- unique software-EGL ordinal-8 entry check;
+Exactly one invocation is authorized.
+
+The cohort remains:
+- 20 predetermined pairs / 40 attempts;
 - fresh official environment per attempt;
 - fixed 82x7 float32 action tape;
-- existing null oracle;
-- PRE_CONSTRUCTION / POST_CONSTRUCTION / UNKNOWN failure classification;
-- fail-closed cohort stop for PRE_CONSTRUCTION or UNKNOWN setup/transport failures;
-- no retry/replacement.
+- unique software-EGL ordinal-8 entry check;
+- zero retry/replacement;
+- no policy/checkpoint inference;
+- no processor calls;
+- no replay/capture/restore.
 
-POST_CONSTRUCTION trajectory/scientific failures remain part of the frozen cohort and do not authorize cherry-picking or replacement.
+PRE_CONSTRUCTION or UNKNOWN setup/transport failure stops further worker launches.
+POST_CONSTRUCTION scientific/trajectory outcomes remain part of the frozen cohort and
+do not authorize replacement.
 
-No second invocation is authorized.
-
-## Scientific null criteria
+## Scientific criteria
 
 Unchanged:
 - action semantic bytes exact;
-- contact identities/sets exact;
-- predicates/terminal semantics/counters/gripper discrete state exact;
+- contact identity/set exact;
+- predicates/terminal/counters/gripper discrete exact;
 - grouped empirical floating physics envelopes;
 - separate RGB envelopes;
 - seven-regime support;
@@ -160,36 +143,46 @@ Unchanged:
 - no global epsilon;
 - no post-hoc multiplier.
 
-F3N PASS requires the complete frozen cohort and all frozen gates.
+## Forbidden
+
+Do not:
+- install/upgrade/downgrade packages;
+- create missing third-party source checkouts;
+- edit implementation/config/tests;
+- alter historical evidence;
+- run camera intervention;
+- enter physical replay/F3b;
+- run another static requalification after F3N-S1;
+- run a second dynamic cohort;
+- reset/clean unrelated files;
+- use git add -A.
 
 ## Evidence
 
-Compact evidence lives under:
+Preserve:
+- runtime/replayvla-p1/f3n/static_qualification.json
 
-`runtime/replayvla-p1/f3n/`
+New:
+- runtime/replayvla-p1/f3n/static_qualification_s1.json
 
-Expected depending on outcome:
-- `static_qualification.json`
-- `null_schedule.json`
-- `pair_registry.json`
-- `raw_evidence_manifest.json`
-- `f3n_summary.json`
+If dynamic starts, expected additional compact evidence:
+- runtime/replayvla-p1/f3n/null_schedule.json
+- runtime/replayvla-p1/f3n/pair_registry.json
+- runtime/replayvla-p1/f3n/raw_evidence_manifest.json
+- runtime/replayvla-p1/f3n/f3n_summary.json
 
-Large raw artifacts remain under `runs/replayvla-p1/` and must not be deleted or committed unless already part of the compact-evidence design.
+Large raw evidence remains under runs/replayvla-p1/ and is not staged.
 
-## Commit and push
-
-After execution stops:
+## Commit/push after execution stops
 
 ~~~bash
 git status --short
 git diff --check
 ~~~
 
-Stage only newly generated compact F3N evidence files that actually exist.
-Do not stage unrelated untracked raw runs.
+Stage only newly generated compact F3N evidence that exists.
 
-Commit a factual PASS/FAIL/BLOCKED evidence message, then:
+Commit a factual PASS/FAIL/BLOCKED evidence message, then push:
 
 ~~~bash
 GIT_SSH_COMMAND='ssh -F /dev/null -i /public/home/xuyinghao/.ssh/shiftvla_github -o IdentitiesOnly=yes' \
@@ -199,17 +192,17 @@ git push origin xyh/replayvla-p1
 ## Return to reviewer
 
 Report:
-
 - execution commit SHA;
 - evidence commit SHA;
-- F3N-static PASS/BLOCKED;
+- original static evidence preserved yes/no;
+- F3N-S1 PASS/BLOCKED;
 - installed dependency identities;
 - asset qualification status/file count/verified bytes;
 - renderer entry result if dynamic started;
 - F3N PASS/FAIL/BLOCKED;
 - completed pairs/attempts;
 - dynamic worker launch count;
-- fail-fast triggered and reason;
+- fail-fast triggered/reason;
 - technical failures;
 - contact/grasp/carried evidence;
 - exact discrete verdict;
@@ -218,4 +211,4 @@ Report:
 - compact evidence paths;
 - remote HEAD.
 
-Even if F3N PASS: STOP. F3b is not authorized.
+Even if F3N PASS: STOP. Physical replay/F3b remains unauthorized.
