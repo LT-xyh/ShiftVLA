@@ -1,61 +1,82 @@
 # ReplayVLA-P1 CURRENT EXECUTION
 
-Status: EXECUTION-READY FOR F3N
+Status: F3N EXECUTION AUTHORIZED
 Branch: xyh/replayvla-p1
 Scientific authority: docs/replayvla-p1/13_f3_native_sa_runtime_pivot.md
-Authority commit: 3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8
+Authority commit: 3902dea1879a4bdf3fbb7407cdcdbe876cf3013f30
 
-This file is the only operational handoff Codex needs for the next session.
-Always fast-forward to the latest origin/xyh/replayvla-p1 containing this file.
+## Validated implementation
+
+Validated implementation commit:
+
+`f2331a203b2a8abaefc57b5ef684706bcdf83a4b`
+
+Runtime validation on the real repository/runtime completed with:
+
+- Python compile: PASS
+- `tests/test_m1_sa_null_native.py`: 35 passed
+- `tests/test_m1_null_calibration.py`: 71 passed in 29.64s
+- renderer/F1T regression: 10 passed
+- committed-range `git diff --check`: PASS
+- no tracked worktree modifications
+- pre-existing untracked `runs/replayvla-p1/` preserved
+
+The validated implementation was fast-forwarded into `xyh/replayvla-p1`.
+This handoff update is documentation-only and does not alter the validated runtime code.
+
+Do not rerun the validation suites unless a tracked implementation/config file changes.
 
 ## Goal
 
-Run exactly one M1-SA-native null qualification (F3N) using the real CPU runtime.
+Execute the single authorized M1-SA-native null qualification (F3N).
 
-Codex is the environment executor only. Do not redesign the route, refactor broadly,
-change packages, or invent another runtime if this execution fails.
+Sequence:
 
-## What Web GPT already prepared
+1. synchronize to current `origin/xyh/replayvla-p1`;
+2. verify no unexpected tracked modifications;
+3. run F3N static qualification exactly once;
+4. if and only if static qualification is PASS, run the single F3N dynamic cohort;
+5. publish/commit compact evidence;
+6. stop. F3b remains unauthorized.
 
-- configs/replayvla/p1_sa_null_native.yaml
-- scripts/m1_sa_null_native.py
-- native branches in scripts/m1_null_calibration.py
-- tests/test_m1_sa_null_native.py
-- runtime/replayvla-p1/f3n/source_trace.json
-- compact evidence publication
-- pre-construction cohort fail-fast
+## Immutable route rules
 
-The F3N path does NOT execute configs/m1/state_replay.yaml and does NOT require
-external/lerobot, external/robosuite, or external/mujoco source checkouts.
+F3N does NOT execute `configs/m1/state_replay.yaml`.
 
-## Allowed real-environment work
+Missing source checkouts for installed:
+- LeRobot
+- robosuite
+- MuJoCo
 
-- import/identify pinned installed CPU dependencies
-- verify actual filesystem inputs
-- deterministic EGL software-device discovery
-- official policy-free LIBERO environment construction
-- fixed-action null trajectories
-- render/observation/invariant collection required by the frozen null protocol
-- write local raw evidence and compact Git evidence
+are not gates. These installed packages are `TRUSTED_DEPENDENCY` with
+source-to-binary provenance `NOT_INDEPENDENTLY_ATTESTED`.
+
+The F3N static qualifier DOES bind:
+- exact CPU interpreter/runtime lock;
+- installed dependency versions/origins;
+- pinned LIBERO checkout;
+- exact ReplayVLA-P1 LIBERO config;
+- exact BDDL/init-state;
+- exact recovered registry/action semantic bytes;
+- exact frozen LIBERO asset manifest and all frozen asset file bytes.
 
 ## Forbidden
 
-- package install/uninstall
-- NumPy/Torch/Python changes
-- creating missing third-party source checkouts
-- policy/checkpoint inference
-- processor construction/calls
-- replay capture/restore
-- camera intervention
-- F3b physical replay
-- replacement/retry cohort
-- F3a-v4/v5
-- git add -A
-- cleanup/reset of unrelated dirty/untracked user files
+Do not:
+- modify/install/uninstall packages;
+- create missing third-party source checkouts;
+- modify implementation/config/tests;
+- use policy/checkpoint inference;
+- construct/call processors;
+- use replay capture/restore;
+- run camera intervention;
+- enter F3b;
+- retry or replace failed F3N attempts;
+- create another F3N runtime/cohort;
+- reset/clean unrelated user files;
+- use `git add -A`.
 
 ## Start
-
-Use the dedicated SSH command already established for this repository.
 
 ~~~bash
 cd /public/home/xuyinghao/workspace/replayvla-p1
@@ -63,40 +84,21 @@ cd /public/home/xuyinghao/workspace/replayvla-p1
 GIT_SSH_COMMAND='ssh -F /dev/null -i /public/home/xuyinghao/.ssh/shiftvla_github -o IdentitiesOnly=yes' \
 git fetch origin
 
+git checkout xyh/replayvla-p1
+
 git merge --ff-only origin/xyh/replayvla-p1
-git status --short
+
 git rev-parse HEAD
+git status --short
 ~~~
 
-Do not proceed if the branch cannot be fast-forwarded or tracked files are unexpectedly modified.
+Known pre-existing untracked `runs/replayvla-p1/` is allowed.
 
-## Gate 1: focused static tests
+If any tracked file is unexpectedly modified, STOP without reset/clean.
 
-Run:
+Record the current HEAD. That HEAD is the F3N execution commit and must not change between static qualification and dynamic execution.
 
-~~~bash
-/public/home/xuyinghao/tmp/shiftvla-libero/bin/python -m pytest -q \
-  tests/test_m1_sa_null_native.py \
-  tests/test_m1_sa_renderer.py \
-  tests/test_m1_sa_f1t.py
-~~~
-
-Then run the existing null suite with a normal cluster timeout, not the previous 30-second wrapper:
-
-~~~bash
-/public/home/xuyinghao/tmp/shiftvla-libero/bin/python -m pytest -q \
-  tests/test_m1_null_calibration.py
-~~~
-
-Also:
-
-~~~bash
-git diff --check
-~~~
-
-If any required test fails: STOP. Do not repair in Codex. Report the exact failure to Web GPT.
-
-## Gate 2: F3N static qualification
+## Gate 1: F3N static qualification
 
 Run exactly once:
 
@@ -107,24 +109,21 @@ Run exactly once:
   --output runtime/replayvla-p1/f3n/static_qualification.json
 ~~~
 
-PASS requires:
-- current CPU interpreter and runtime lock
-- installed dependency versions/origins
-- installed modules under the isolated purelib
-- pinned LIBERO checkout
-- exact ReplayVLA-P1 LIBERO config bytes
-- exact BDDL/init-state
-- exact derived registry
-- exact action semantic bytes
-- fixed assets
-- no legacy state_replay execution parent
+This is allowed to inspect/import the pinned installed CPU runtime and hash frozen assets.
+It must not construct the LIBERO environment or create an EGL context.
 
-If qualification BLOCKS/FAILS: STOP and push the compact static evidence only.
-Do not construct an environment.
+If static qualification returns BLOCKED/FAIL:
 
-## Gate 3: execute one F3N cohort
+- STOP;
+- do not run `execute`;
+- do not repair in Codex;
+- preserve the generated compact evidence;
+- commit only the generated compact F3N evidence;
+- push and return to Web GPT.
 
-Only after Gate 2 PASS:
+## Gate 2: single F3N cohort
+
+Only if Gate 1 is PASS, execute exactly once:
 
 ~~~bash
 /public/home/xuyinghao/tmp/shiftvla-libero/bin/python -B \
@@ -133,68 +132,90 @@ Only after Gate 2 PASS:
   --qualification runtime/replayvla-p1/f3n/static_qualification.json
 ~~~
 
-The runner will:
-1. freeze the 20-pair / 40-attempt schedule;
-2. publish compact schedule copies;
-3. perform one deterministic renderer entry check;
-4. execute the existing null oracle through the native runtime branch;
-5. stop launching workers after the first pre-construction setup failure;
-6. retain post-construction scientific/technical outcomes normally;
-7. publish runtime/replayvla-p1/f3n/f3n_summary.json.
+The runner owns:
+- frozen 20-pair / 40-attempt schedule;
+- compact schedule publication;
+- unique software-EGL ordinal-8 entry check;
+- fresh official environment per attempt;
+- fixed 82x7 float32 action tape;
+- existing null oracle;
+- PRE_CONSTRUCTION / POST_CONSTRUCTION / UNKNOWN failure classification;
+- fail-closed cohort stop for PRE_CONSTRUCTION or UNKNOWN setup/transport failures;
+- no retry/replacement.
 
-No rerun is authorized.
+POST_CONSTRUCTION trajectory/scientific failures remain part of the frozen cohort and do not authorize cherry-picking or replacement.
 
-## Evidence expected in Git
+No second invocation is authorized.
 
-Depending on where execution stops:
+## Scientific null criteria
 
-- runtime/replayvla-p1/f3n/static_qualification.json
-- runtime/replayvla-p1/f3n/null_schedule.json
-- runtime/replayvla-p1/f3n/pair_registry.json
-- runtime/replayvla-p1/f3n/raw_evidence_manifest.json
-- runtime/replayvla-p1/f3n/f3n_summary.json
+Unchanged:
+- action semantic bytes exact;
+- contact identities/sets exact;
+- predicates/terminal semantics/counters/gripper discrete state exact;
+- grouped empirical floating physics envelopes;
+- separate RGB envelopes;
+- seven-regime support;
+- positive contact/grasp/carried evidence;
+- no global epsilon;
+- no post-hoc multiplier.
 
-Large raw attempt/trajectory evidence stays under runs/replayvla-p1/ and is not committed.
-Do not delete it.
+F3N PASS requires the complete frozen cohort and all frozen gates.
 
-## Commit/push
+## Evidence
 
-Inspect first:
+Compact evidence lives under:
+
+`runtime/replayvla-p1/f3n/`
+
+Expected depending on outcome:
+- `static_qualification.json`
+- `null_schedule.json`
+- `pair_registry.json`
+- `raw_evidence_manifest.json`
+- `f3n_summary.json`
+
+Large raw artifacts remain under `runs/replayvla-p1/` and must not be deleted or committed unless already part of the compact-evidence design.
+
+## Commit and push
+
+After execution stops:
 
 ~~~bash
 git status --short
 git diff --check
 ~~~
 
-Stage only generated F3N compact evidence that exists. Omit nonexistent files instead of creating placeholders.
+Stage only newly generated compact F3N evidence files that actually exist.
+Do not stage unrelated untracked raw runs.
 
-Then commit with a factual message reflecting PASS/FAIL/BLOCKED, and push with:
+Commit a factual PASS/FAIL/BLOCKED evidence message, then:
 
 ~~~bash
 GIT_SSH_COMMAND='ssh -F /dev/null -i /public/home/xuyinghao/.ssh/shiftvla_github -o IdentitiesOnly=yes' \
 git push origin xyh/replayvla-p1
 ~~~
 
-## Return to Web GPT
+## Return to reviewer
 
-Report only:
+Report:
 
-- execution commit SHA before qualification
-- evidence commit SHA
-- static tests
-- F3N-static PASS/BLOCKED
-- installed dependency identities
-- renderer entry result
-- F3N PASS/FAIL/BLOCKED
-- completed pairs / attempts
-- dynamic worker launch count
-- fail-fast triggered yes/no
-- technical failures
-- contact/grasp/carried coverage
-- exact discrete verdict
-- main physics envelopes
-- RGB envelope summary
-- compact evidence paths
-- remote HEAD
+- execution commit SHA;
+- evidence commit SHA;
+- F3N-static PASS/BLOCKED;
+- installed dependency identities;
+- asset qualification status/file count/verified bytes;
+- renderer entry result if dynamic started;
+- F3N PASS/FAIL/BLOCKED;
+- completed pairs/attempts;
+- dynamic worker launch count;
+- fail-fast triggered and reason;
+- technical failures;
+- contact/grasp/carried evidence;
+- exact discrete verdict;
+- physics envelope summary;
+- RGB envelope summary;
+- compact evidence paths;
+- remote HEAD.
 
-Do not enter F3b even if F3N PASS.
+Even if F3N PASS: STOP. F3b is not authorized.
