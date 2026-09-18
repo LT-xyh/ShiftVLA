@@ -969,6 +969,11 @@ def _validate_frozen_schedule(
             execution_commit = run_spec.get("execution_commit")
             if not isinstance(execution_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", execution_commit):
                 raise ProvenanceError("native run specification execution commit is invalid")
+            config_file_sha = run_spec.get("config_file_sha256")
+            if not isinstance(config_file_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", config_file_sha):
+                raise ProvenanceError("native run specification raw config SHA is invalid")
+            if sha256_file(run_spec["config_path"]).lower() != config_file_sha.lower():
+                raise ProvenanceError("native raw config bytes drifted after schedule preparation")
             if execution_commit != _repo_head():
                 raise ProvenanceError("native run specification execution commit drift")
             frozen_identity = run_spec.get("runtime_identity_contract")
@@ -3607,6 +3612,8 @@ def _verify_worker_binding(
     if config.get("runtime_contract") == "m1_sa_native_v1":
         if run_spec.get("execution_commit") != _repo_head():
             raise ProvenanceError("worker execution commit differs from repository HEAD")
+        if str(run_spec.get("config_file_sha256", "")).lower() != sha256_file(config_path).lower():
+            raise ProvenanceError("worker raw config bytes differ from the run specification")
         if not _exact_equal(
             job.get("runtime_identity_contract"),
             run_spec.get("runtime_identity_contract"),
@@ -3784,6 +3791,7 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
     }
     if config.get("runtime_contract") == "m1_sa_native_v1":
         run_spec_body["execution_commit"] = _repo_head()
+        run_spec_body["config_file_sha256"] = sha256_file(config_target)
     run_spec = {**run_spec_body, "run_spec_sha256": sha256_bytes(canonical_json(run_spec_body).encode("utf-8"))}
     write_json_atomic(run_spec_path, run_spec)
     pair_registry_body = {
