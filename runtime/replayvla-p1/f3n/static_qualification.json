@@ -1,0 +1,11 @@
+{
+  "authority_commit": "3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8",
+  "config_path": "/public/home/xuyinghao/workspace/replayvla-p1/configs/replayvla/p1_sa_null_native.yaml",
+  "execution_commit": "ee8aed4b9d40218e320e5de892ee4623828203a9",
+  "legacy_state_replay_consulted": false,
+  "phase": "F3N-static",
+  "policy_or_processor_import_authorized": false,
+  "reason": "ModuleNotFoundError: No module named 'scripts'",
+  "stage": "static_qualification",
+  "status": "BLOCKED"
+}
