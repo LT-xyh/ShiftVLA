@@ -1,0 +1,404 @@
+{
+  "attempts": [
+    {
+      "attempt_id": "m1n0-pair-000-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "64762cfd0413002f5a060839fcabe41da06d6f6c9ae0c8b573845d647dcf0196",
+      "pair_id": "m1n0-pair-000",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-000-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "09e4a7230d74aac04193efc985999321d57422af1ccb55bcc22200f3bae4c6e3",
+      "pair_id": "m1n0-pair-000",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-001-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "8a2e5f6c8ae4f50af17c24000e0eca86737e90e143971ee4b787de64a100fe02",
+      "pair_id": "m1n0-pair-001",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-001-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "df87268bd70b928e862c35fb2a28517bef390876b97c2857442c2bea4711204c",
+      "pair_id": "m1n0-pair-001",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-002-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "deab1c671185186bee469c8957a7007d5c323791c6ef592dd2f447023d6ed520",
+      "pair_id": "m1n0-pair-002",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-002-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "e7e4fa07cff360335b9f3f33a02a8e1a6cd3c7eab1630bc0bab38c915c6c59fe",
+      "pair_id": "m1n0-pair-002",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-003-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "561520fd59a1f623823397bdc9afecd5bb9b76759a62c2cdc3c26f52f1e489fb",
+      "pair_id": "m1n0-pair-003",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-003-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "3759d0e0cd19ff8f3ae651c46b79426e0c0da1a1634965c1032efdce92ccd102",
+      "pair_id": "m1n0-pair-003",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-004-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "948a692b8da4fef695a56e9ce0fc24c7d3d964e1b1f71d9207d64a76aaf552b5",
+      "pair_id": "m1n0-pair-004",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-004-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "f80bc0e9c201eb97e9293eb84b64762d9343d6dc578e6d096cfb64cf9ed2315b",
+      "pair_id": "m1n0-pair-004",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-005-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "ce0ab0e8c761bbae6944fb27509bde452a94d2f520f6f1293afdb91a250aa578",
+      "pair_id": "m1n0-pair-005",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-005-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "8538a4efbf2da44563588a0d1fd900a5a702067f67a3573fef503dee369bff42",
+      "pair_id": "m1n0-pair-005",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-006-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "adcbc08e7dbc1fc37ac01693311d77b9a492b3f9add78228027c2beb6e6b613b",
+      "pair_id": "m1n0-pair-006",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-006-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "128dee5062093a34671d05d1f2f04f04910574ca49ecf2dfe5c8825e66821c83",
+      "pair_id": "m1n0-pair-006",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-007-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "594a734f3ad4a162c3387853f433b300cb1eb90960aa6656eecca54705ae3724",
+      "pair_id": "m1n0-pair-007",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-007-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "3475ef33978c97af3c973df33a2156eac07fd475e5d629c515e3a3284c23e32d",
+      "pair_id": "m1n0-pair-007",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-008-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "12bc3248f8f9ccc6d66be4940b32e9d7651551c6d94da83f0c557c93d6deb293",
+      "pair_id": "m1n0-pair-008",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-008-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "199845a76f03bdecdcc21161514f032c6c7e6c2f291af8c7af4027652c638b14",
+      "pair_id": "m1n0-pair-008",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-009-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "bedaf2ef7c95c49b8b735ddafcf0bfd9420f3237fbec9090f040a0876589fdd3",
+      "pair_id": "m1n0-pair-009",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-009-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "fa080c9538923a5b435107c5dca35484ec967133635a20a6b1962fd5df8f68e5",
+      "pair_id": "m1n0-pair-009",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-010-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "cdc8e6154640cb6321ab2676d19d093d58c6bdfe24dfcc71054b3e11d2856803",
+      "pair_id": "m1n0-pair-010",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-010-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "d01f8b66d70fed7d5761e24d6415b9d545afa02a23a436dc17634b46f719670c",
+      "pair_id": "m1n0-pair-010",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-011-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "7cf1b377d886563e57c0291cb3c4eefa0e38485cf76e950cbae73c7a927d3fef",
+      "pair_id": "m1n0-pair-011",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-011-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "0def65bfddc9b2356a188617ea943d18df4cdbfdfe5508a229acb7e4fc730c10",
+      "pair_id": "m1n0-pair-011",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-012-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "ca0974fc77e91843f99e087b0279c1901059978193e221463f830170759f895e",
+      "pair_id": "m1n0-pair-012",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-012-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "3cd39b2d5d42c68db8caa12b2af1557fbed068401f503d59b0a3765535a406e2",
+      "pair_id": "m1n0-pair-012",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-013-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "32c8513d3953e6cf1e225a542fe5e9be2dee27cb66a33071aa89c37c56659964",
+      "pair_id": "m1n0-pair-013",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-013-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "3e9c7b0eddfcccc2205875f11aa43e5e778ead856ae6bc8aaf599a6d91ecb092",
+      "pair_id": "m1n0-pair-013",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-014-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "1a4febde6d7ec235e337062c2fb2cf07b33fc42d92f428470f85352b025e7dca",
+      "pair_id": "m1n0-pair-014",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-014-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "249b15bf345545e14d017056c3bf04b3538695bbf014b0dcaa9b4095da278129",
+      "pair_id": "m1n0-pair-014",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-015-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "cd3cb0eb2e4e281e525302b1377d0653f813d193a7502f76591bf81dd7d7696d",
+      "pair_id": "m1n0-pair-015",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-015-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "d29f95b45517e2cf5cc9cd5b7b7e04485f638d4eda0aaa800451e5bc335713a5",
+      "pair_id": "m1n0-pair-015",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-016-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "9fc61e8845fb3ae3c2563235e7b3164ef06a8ea6cf134ec715e5ca340491ece1",
+      "pair_id": "m1n0-pair-016",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-016-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "a5bffe51d27e196e7976ece0e74c068534fb49f7123f8c8ceab22855be0b31bf",
+      "pair_id": "m1n0-pair-016",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-017-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "5974f51ab7d65d630e8cd642388101b9515b0d4c2f362bb504f047be0799d0c4",
+      "pair_id": "m1n0-pair-017",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-017-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "8a6b1cd1cc0ae39e94b8c9fe11b7637dbca02695ea19d8d01217fa0aacaf67d3",
+      "pair_id": "m1n0-pair-017",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-018-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "3f568d19e8831bc04461a6ef1b6636697c66bf2306c3792908dfdb331d22b694",
+      "pair_id": "m1n0-pair-018",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-018-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "0984af1cd0d63eac86a2cbe5428fc01812434f2dc45307fceac219327687aba4",
+      "pair_id": "m1n0-pair-018",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-019-A",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "e4384cf8209171f84a085fc961e26786515a4e3403cf59cdef6a4d36e31ef3b6",
+      "pair_id": "m1n0-pair-019",
+      "returncode": 1,
+      "side": "A",
+      "status": "failed",
+      "timed_out": false
+    },
+    {
+      "attempt_id": "m1n0-pair-019-B",
+      "error": "M1ConfigError: frozen LIBERO_CONFIG_PATH is unavailable: /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; close cleanup failed: adapter was not constructed",
+      "output_sha256": "da46eedf969d1a1cd3ca4395cc0bdb43da356032cd1f6cb2c39d82b84defddd1",
+      "pair_id": "m1n0-pair-019",
+      "returncode": 1,
+      "side": "B",
+      "status": "failed",
+      "timed_out": false
+    }
+  ]
+}

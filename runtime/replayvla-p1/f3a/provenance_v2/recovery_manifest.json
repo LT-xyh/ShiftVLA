@@ -1,0 +1,32 @@
+{
+  "artifacts": [
+    {
+      "controlled_path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f3a/provenance_v2/source_episode_row.json",
+      "role": "source row",
+      "sha256": "772dccb25c1692c5ce4b4d791f82c736e2a1921d9541a07e40dd2ed92873306e",
+      "size": 90380
+    },
+    {
+      "controlled_path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f3a/provenance_v2/parent_run_manifest.json",
+      "role": "parent run manifest",
+      "sha256": "fd8a0ae67a5f2c295b7fd84a71b2ff34319b7a2aa64c84374ab788fb774e399f",
+      "size": 114756
+    },
+    {
+      "controlled_path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f3a/provenance_v2/parent_terminal_manifest.json",
+      "role": "parent terminal manifest",
+      "sha256": "338588dedaad3e929ca9023b984d509549fd0743b77a7cce579c70712d4edef1",
+      "size": 97388
+    }
+  ],
+  "changed_json_pointers": [
+    "/traces/0/source_file",
+    "/traces/0/parent_run_manifest",
+    "/traces/0/parent_terminal_manifest",
+    "/tape_provenance/per_trace/libero_spatial-task000-init000/path",
+    "/registry_sha256"
+  ],
+  "new_registry_sha256": "2be994dc8915b53b9fb94b5a55fa5d95e13979ea21d6a5aba6112a1611f66608",
+  "old_registry_sha256": "092c64910b7530c6d84a98a925124879e9a96196b54d45b284a70ccfb62dd49c",
+  "semantic_equivalence": "PATH_ONLY"
+}

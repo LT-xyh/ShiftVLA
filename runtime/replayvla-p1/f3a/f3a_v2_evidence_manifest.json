@@ -1,0 +1,231 @@
+{
+  "ownership": "attempt terminal records owned by fixed pair/side; no replacement",
+  "raw_and_compact_files": [
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-000-A.json",
+      "sha256": "fc4825fc4d735cd7d1f4396c26b174693d15d86f5171650710e2b746dffba642",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-000-B.json",
+      "sha256": "8cb95510a7b12bb8f8eb87f34ba51a50c67a1e73576f349050d057403aa6785a",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-001-A.json",
+      "sha256": "cf4e422f3f2690982e8c8cea0bff4f93b3f30ac033d8cf68abf799389d21054b",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-001-B.json",
+      "sha256": "96f507c6207d14a75b9dd6f663599468efa2b96741ffe890ea9db18644cfd564",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-002-A.json",
+      "sha256": "9794ea6c86f6e9e0061bf2fb4d3ad2d29e6afde860a4da1d3aca7fa28ebe8269",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-002-B.json",
+      "sha256": "bb48bae9d2c7c4e03fb11286a11807baf6ca2d1b763829be46f148b70218efe1",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-003-A.json",
+      "sha256": "69ffbba36afb6016774ebe6e5288f0cd99e65873a803a602dcd420147aef0153",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-003-B.json",
+      "sha256": "e45358253b16d4c55bcc0e96f141d9c7b10815dcc1743b445d656ec6b5b2c552",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-004-A.json",
+      "sha256": "333c21de34da33d0140883b39726cbf9548adbcd5202ade092b7e7e4a0c7d6af",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-004-B.json",
+      "sha256": "fba5e4814354fef2b648e5eece3b93ba0c034f598b051ced30a6d1a6e235a246",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-005-A.json",
+      "sha256": "245724bf3482b50a0c36729788985cf8bd9e7bf81279acb6b6daf0a473b43f41",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-005-B.json",
+      "sha256": "f7fa6195092867ba9e73b33b1d2093b2dd58bb9ea15b2def21d9e7c6922c7e0e",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-006-A.json",
+      "sha256": "c082070c03697d43fb272bc07992eaeeddf1498a0971f30a02a93015927019af",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-006-B.json",
+      "sha256": "39e6966d3499c24bed69ddbdc0130544dd94f30b041b6827f7b1710a2406cd7d",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-007-A.json",
+      "sha256": "5e93074d161447f2c00422319108eea0c370e6dd474e5d18fe3815bed24e7ae6",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-007-B.json",
+      "sha256": "469e46cabb15c777f19fd10f9bb99d2eb36417411356cd222acf24f597fc48c6",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-008-A.json",
+      "sha256": "21a3600254aaaca77af21e2d90e5114b8b5d2d38abc092dbbe0ad67dad44e126",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-008-B.json",
+      "sha256": "99203cdee9b0693ebe64481479e9d58097358f93f6a765432e9d97d244673837",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-009-A.json",
+      "sha256": "5a6963e2bb6a69b5851c3925d4ca25f5eeb4ee3d7068ccb5a7e2b36b6880aeb0",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-009-B.json",
+      "sha256": "b7776805047331a359c20ce0c3d7c916e3b694a0fd3ababa5d9a53d3c9ad0536",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-010-A.json",
+      "sha256": "a0f12580e8a939af9b4c1352bf6ec17ee173fa53b6f81fc48eb86a6b264c71e9",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-010-B.json",
+      "sha256": "711ec6a17648bf771b37acb878350670126ebe8653428908fca5c4672b5ecaa0",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-011-A.json",
+      "sha256": "9e838c83d9bd25631a962a04e76f8a5121d66e3884450c903134bca3b37b4ecf",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-011-B.json",
+      "sha256": "f0085756eab3a5f45180905ad463c5037a29e7a53b165bce99942f30b34328d6",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-012-A.json",
+      "sha256": "af5c4aceb9e075eb3de6ddec3f1e0f627e6b5345c01673c4c303f66a194b3848",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-012-B.json",
+      "sha256": "859d8890db05102f57ee96f41acf4eb1a75a06ec068a57804e2ceb11660a3496",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-013-A.json",
+      "sha256": "72fc7ba07f87a3502708da2e8bd5273a888f6b4aa20d5f0c23465af0aeead8d7",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-013-B.json",
+      "sha256": "f2039abd50393c94c70fd269eb77e975f40bb2881746cce4731dc689f28151fd",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-014-A.json",
+      "sha256": "9029936f6ae9c710728479d2909d9ced4bcded7cd8448b132a90b7fa36eada5d",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-014-B.json",
+      "sha256": "f459cb48c28ae3e3f157119b2d9ab713d03d7e8173512f2cac6e3aac33b7fdd7",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-015-A.json",
+      "sha256": "575456895874e48f5f873846bf80d18164739754fab60fada906b35af8d9bc5c",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-015-B.json",
+      "sha256": "88dadde488423d4022c6fdca03ab6764867eafb99b37bcb73af79056d1d36b6c",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-016-A.json",
+      "sha256": "261a6545340ec5bc00486c66217530154faeed83f1d404f43c7e0f78ce14e2c6",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-016-B.json",
+      "sha256": "472e9876f53b81d290251cfc898d1e72ae7e620cc92f68262d9ed167e191aeaa",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-017-A.json",
+      "sha256": "efaf15bb61733352a12f532f95d8f744a0c0b51978240db469f48f1d1f2cb385",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-017-B.json",
+      "sha256": "ecd05530f17e8c87731f079c79f0c53cdf0098893a465ca2d1ae49cc90e97939",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-018-A.json",
+      "sha256": "8009453b1ed505e4ebf3d320f03ccb9060d4fc509157bc744de4d1177c508d24",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-018-B.json",
+      "sha256": "4aa799c09e30791b66e7022f81f5da92f35cad30417932b3429a4a9291b16a67",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-019-A.json",
+      "sha256": "1279d04c55e6d85d2a96236e6f48692e04928318ce5e855a1975c5990e99bd4b",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/attempts/m1n0-pair-019-B.json",
+      "sha256": "f4b40b25704c9e4331126667f387b866e0696f2fdc85fca0f1919d6587d52a01",
+      "size": 2434
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/final_pair_registry.json",
+      "sha256": "28baed93db6216304eaa727bbaef1c313cf753a8033a97828f30a90326979c38",
+      "size": 87709
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/pair_measurements.json",
+      "sha256": "e3b56870768d295ae065c4a3f3bdd46a3032d967be8ab60b72ed8acdec5ae81f",
+      "size": 84493
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/pair_registry.json",
+      "sha256": "2cfb57ba0ad345a04ebeaeb960558dc0cb22f01b8cc17e6fa80d20c22dc59c6d",
+      "size": 8474
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/run_spec.json",
+      "sha256": "98b0811ba4920b90eaba904cec39441015eaecb01bfc5a307993478e224aa968",
+      "size": 11952
+    },
+    {
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915/terminal_manifest.json",
+      "sha256": "2a3db4c3b60cbd61245d60d62d38f89aaa17c0ae742568ca96683eb205726d8b",
+      "size": 95646
+    }
+  ],
+  "run_root": "/public/home/xuyinghao/workspace/replayvla-p1/runs/replayvla-p1/f3a-v2-20260915"
+}

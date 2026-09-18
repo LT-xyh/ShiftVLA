@@ -1,0 +1,11 @@
+{
+  "attempt_count": 40,
+  "authority": "524109e2442a925890c071914dfe20942961a9d7",
+  "config": "configs/replayvla/p1_null_v2.yaml",
+  "config_sha256": "1805117c2b94a9c783cfad3896aad12dddf0ed4042def1b94eed2d345da96fe1",
+  "pair_count": 20,
+  "recovery_manifest": "runtime/replayvla-p1/f3a/provenance_v2/recovery_manifest.json",
+  "registry": "runtime/replayvla-p1/f3a/m1_hard_gate_tape_registry.relocated.v2.json",
+  "registry_sha256": "2be994dc8915b53b9fb94b5a55fa5d95e13979ea21d6a5aba6112a1611f66608",
+  "retry_or_replacement": false
+}

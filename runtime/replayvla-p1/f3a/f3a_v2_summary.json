@@ -1,0 +1,25 @@
+{
+  "blocking_reason": "All 40 attempts failed before environment construction because frozen LIBERO_CONFIG_PATH points to unavailable /public/home/xuyinghao/workspace/vla/ShiftVLA/runtime/m1/libero_config; no trajectory was produced.",
+  "completed_attempts": 0,
+  "completed_pairs": 0,
+  "contact_grasp_carried": {
+    "carried": "UNKNOWN",
+    "contact": "UNKNOWN",
+    "grasp": "UNKNOWN"
+  },
+  "dynamic_scope_exhausted": true,
+  "exact_discrete_invariants": "UNKNOWN (no attempt completed)",
+  "f2a_governance_deviation": "F2R remains FAIL/NONCONFORMANT; precondition omission retained; not reinterpreted as PASS",
+  "f3b": "NOT_AUTHORIZED",
+  "phase": "F3a",
+  "physics_envelopes": "UNKNOWN",
+  "rgb_envelopes": "UNKNOWN",
+  "run_spec_sha256": "c8161fbc5d2f6bccb8791c3b83bfd94c3ed086713859ce52f25024f2e2552a51",
+  "schedule": "v2",
+  "schedule_sha256": null,
+  "scheduled_attempts": 40,
+  "scheduled_pairs": 20,
+  "status": "BLOCKED",
+  "technical_failure_count": 40,
+  "terminal_manifest_status": "BLOCKED"
+}
