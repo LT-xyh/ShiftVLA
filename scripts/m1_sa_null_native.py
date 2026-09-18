@@ -420,6 +420,18 @@ def _write_json_no_overwrite(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def _copy_bytes_no_overwrite(source: Path, target: Path) -> dict[str, Any]:
+    if source.is_symlink() or not source.is_file():
+        raise NativeQualificationError(f"source evidence is not a regular file: {source}")
+    if target.exists() or target.is_symlink():
+        raise NativeQualificationError(f"refusing to overwrite compact evidence: {target}")
+    data = source.read_bytes()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    return {"path": str(target), "sha256": digest, "size": len(data)}
+
+
 def static_qualify(config_path: str | Path) -> dict[str, Any]:
     config_target = _resolve(config_path).resolve()
     config = _load_yaml(config_target)
@@ -520,19 +532,100 @@ def execute_f3n(
     if qualification.get("execution_commit") != _repo_head():
         raise NativeQualificationError("repository HEAD changed after F3N qualification")
 
+    compact_root = ROOT / "runtime/replayvla-p1/f3n"
+    if (compact_root / "f3n_summary.json").exists():
+        raise NativeQualificationError("F3N compact summary already exists; no rerun is authorized")
+
     prepared = nullcal.prepare_run(config_path=config_target)
-    entry = renderer_entry_check(config)
-    runner = FailFastProcessRunner(nullcal._default_process_runner)
-    result = nullcal.run_calibration(prepared, process_runner=runner)
-    result["f3n"] = {
+    schedule_record = _copy_bytes_no_overwrite(
+        Path(prepared.run_spec_path), compact_root / "null_schedule.json"
+    )
+    pair_registry_record = _copy_bytes_no_overwrite(
+        Path(prepared.pair_registry_path), compact_root / "pair_registry.json"
+    )
+
+    base_meta = {
         "authority_commit": AUTHORITY_COMMIT,
         "execution_commit": _repo_head(),
         "static_qualification_path": str(qualification_target),
+        "static_qualification_sha256": _sha256_file(qualification_target),
+        "schedule": schedule_record,
+        "pair_registry": pair_registry_record,
+    }
+
+    try:
+        entry = renderer_entry_check(config)
+    except Exception as exc:
+        summary = {
+            "phase": "F3N",
+            "status": "BLOCKED",
+            "stage": "renderer_entry_check",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "completed_pairs": 0,
+            "completed_attempts": 0,
+            "technical_failures": 0,
+            "f3n": {**base_meta, "renderer_entry_check": "BLOCKED"},
+        }
+        _write_json_no_overwrite(compact_root / "f3n_summary.json", summary)
+        return summary
+
+    runner = FailFastProcessRunner(nullcal._default_process_runner)
+    try:
+        result = nullcal.run_calibration(prepared, process_runner=runner)
+    except Exception as exc:
+        summary = {
+            "phase": "F3N",
+            "status": "BLOCKED",
+            "stage": "null_runner",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "completed_pairs": 0,
+            "completed_attempts": 0,
+            "technical_failures": 1,
+            "f3n": {
+                **base_meta,
+                "renderer_entry_check": entry,
+                "dynamic_worker_launches": runner.dynamic_launches,
+                "cohort_fail_fast_triggered": runner.blocked,
+                "cohort_block_reason": runner.block_reason,
+            },
+        }
+        _write_json_no_overwrite(compact_root / "f3n_summary.json", summary)
+        return summary
+
+    result["f3n"] = {
+        **base_meta,
         "renderer_entry_check": entry,
         "dynamic_worker_launches": runner.dynamic_launches,
         "cohort_fail_fast_triggered": runner.blocked,
         "cohort_block_reason": runner.block_reason,
     }
+    terminal_path = result.get("terminal_manifest_path")
+    raw_manifest = {
+        "output_root": str(prepared.run_spec["output_root"]),
+        "terminal_manifest": (
+            {
+                "path": str(terminal_path),
+                "sha256": _sha256_file(terminal_path),
+                "size": Path(str(terminal_path)).stat().st_size,
+            }
+            if isinstance(terminal_path, str) and Path(terminal_path).is_file()
+            else None
+        ),
+        "schedule": schedule_record,
+        "pair_registry": pair_registry_record,
+        "raw_artifacts_committed_to_git": False,
+    }
+    _write_json_no_overwrite(compact_root / "raw_evidence_manifest.json", raw_manifest)
+    summary = {
+        "phase": "F3N",
+        "status": result.get("status"),
+        "counts": copy.deepcopy(result.get("counts", {})),
+        "gates": copy.deepcopy(result.get("gates", {})),
+        "errors": copy.deepcopy(result.get("errors", [])),
+        "terminal_manifest_path": terminal_path,
+        "f3n": copy.deepcopy(result["f3n"]),
+    }
+    _write_json_no_overwrite(compact_root / "f3n_summary.json", summary)
     return result
 
 
