@@ -12,9 +12,9 @@ modify phase permissions.
 
 ### One-sentence scientific claim
 
-For a frozen closed-loop VLA, matched fresh reexecution from the same initial condition can separate
-the effect of **future observation corruption conditional on a fixed prefix treatment** from the
-**total aftereffect of previously corrupted closed-loop history**, without claiming an exact
+For a frozen closed-loop VLA, matched fresh reexecution measures whether **observation corruption
+leaves persistent behavioral aftereffects after the corruption is removed**, and whether accumulated
+corrupted history changes sensitivity to subsequent corruption, without claiming an exact
 same-physical-state counterfactual.
 
 ### Recommendation
@@ -22,13 +22,16 @@ same-physical-state counterfactual.
 **CONDITIONAL GO.**
 
 The route is substantially simpler than exact-state replay and is supported by an already working
-ordinary closed-loop rollout path. Two narrow items must be closed before a pilot is authorized:
+ordinary closed-loop rollout path. Two narrow pre-pilot implementation gates must close before even
+a very small real micro-validation is worth authorizing:
 
-1. an executable, observation-only camera intervention seam does not currently exist in this
-   repository; only protocol-level camera/yaw definitions exist;
-2. paired policy stochasticity should use the repository's explicit-flow-noise policy API rather
-   than relying on mutable global RNG, and the one-action-per-query semantics must be validated
-   against the frozen `n_action_steps=1` contract before real pilot execution.
+- **G-P1 — official select-action explicit-noise preservation.** PASS must prove that the future
+  transport extension still uses the same official `SmolVLAPolicy.select_action`, the same official
+  processors, the same frozen `n_action_steps=1` queue semantics, and changes only the explicit
+  matched flow-noise input.
+- **G-P2 — observation-only camera switch timing.** PASS must prove the frozen observation/action
+  index convention, no extra `env.step`, no horizon change, no action/image copying, branch-local
+  rendering, and unchanged physics-relevant model/state identity.
 
 No exact simulator restore, capture, replay, or physical-state branching is needed.
 
@@ -108,9 +111,14 @@ The model worker exposes explicit reset and queue evidence.
 - seeds Torch again after reset;
 - verifies that the action queue is empty.
 
-`DCUModelWorker.select_action(...)` calls official
+`DCUModelWorker.select_action(...)` currently calls official
 `policy.select_action(batch)` under inference mode and records queue length before/after and whether
-a new chunk was generated.
+a new chunk was generated. Reviewer verification of the pinned LeRobot implementation
+(`huggingface/lerobot@7e241bd630a3719a56157a497ce5d08f244784f1`) establishes that official
+`SmolVLAPolicy.select_action(batch, noise=...)` itself accepts explicit flow noise. With frozen
+`n_action_steps=1`, the official action queue has length one: when empty it generates a chunk,
+enqueues only `actions[:1]`, then returns it via `popleft()`. Therefore each environment action
+query regenerates a chunk through the official `select_action` path.
 
 The CPU-side `FeatureOnlyRemotePolicy` mirrors this queue state, and `m0_smoke.PolicyProxy`
 records queue length around each call.
@@ -132,16 +140,22 @@ Relevant sources found in the checked-in path:
    Torch; the production model worker explicitly seeds Torch/accelerator RNG at reset.
 3. **Native policy RNG**: the historical baseline declares
    `action_noise.source = native_policy_rng` and `explicit = false`.
-4. **Explicit flow noise API**:
+4. **Explicit flow noise support and narrow missing transport**:
    - `dcu_preflight.generate_flow_noise(seed, shape)` creates deterministic CPU flow noise with a
      dedicated `torch.Generator`;
-   - `DCUModelWorker.predict_action_chunk(...)` accepts explicit noise and calls the official
-     `policy.predict_action_chunk(batch, noise=noise)`;
-   - `select_action(...)` intentionally rejects caller-supplied noise and uses native policy RNG.
+   - pinned official `SmolVLAPolicy.select_action(batch, noise=...)` accepts explicit flow noise;
+   - current repo transport is the missing seam: `FeatureOnlyRemotePolicy.select_action` rejects
+     extra args, worker `_request_bundle(..., command="select_action")` rejects `noise_path`, and
+     the worker currently invokes `policy.select_action(batch)` without a noise argument.
 
-The current baseline is therefore seeded but is **not** a sufficient paired-noise protocol for
-four-arm scientific comparison: sharing execution order or one mutable global RNG stream is not
-acceptable evidence of matched stochasticity.
+Therefore the future Paper-1 implementation should **not** call `predict_action_chunk` manually or
+reimplement action selection. It only needs a narrow transport extension carrying
+`features + explicit_noise` to the same official
+`policy.select_action(batch, noise=explicit_noise)`.
+
+The current baseline is seeded but is **not** a sufficient paired-noise protocol for four-arm
+scientific comparison: sharing execution order or one mutable global RNG stream is not acceptable
+evidence of matched stochasticity.
 
 ### 2.5 Renderer/environment feasibility
 
@@ -189,8 +203,9 @@ A reviewer must approve the exact camera field/API before runtime use.
 - `m0_smoke.TraceStore`, `PolicyProxy`, and environment action capture ideas.
 - existing task/init selection and terminal/success handling.
 - existing failure/no-overwrite and root-level evidence conventions.
-- explicit flow-noise generation and the model worker's
-  `predict_action_chunk(batch, noise=...)` seam.
+- explicit flow-noise generation plus the pinned official
+  `SmolVLAPolicy.select_action(batch, noise=...)` capability; the future repo change is limited to
+  transporting that explicit noise through the existing remote select-action boundary.
 - task-equal aggregation, root clustering, technical-missing ledger and leave-one-task-out analysis
   from the approved Paper-1 protocol.
 
@@ -241,7 +256,7 @@ camera_intervention:
   severity_degrees
   clean_definition
   shifted_definition
-switch_index
+switch_index  # first policy observation/action index using the future condition
 horizon
 action_contract:
   dim = 7
@@ -260,17 +275,31 @@ Branch name must **not** participate in the paired policy-noise key.
 
 ## 5. Fresh-reexecution branch construction
 
-Let environment action indices be zero-based. `t_switch` is the first index executed under the
-future condition.
+Freeze the closed-loop indexing convention as:
+
+```text
+obs_t
+ -> policy
+ -> action_t
+ -> env.step(action_t)
+ -> obs_{t+1}
+```
+
+`t_switch` is the first **policy observation/action index** using the future condition. For
+`t_switch = 50`, `obs_0 ... obs_49` use the prefix condition and `obs_50 ...` use the future
+condition. Consequently `action_49` is still chosen from prefix `obs_49`, while `action_50`
+is the first action chosen from future-condition `obs_50`.
 
 Every arm starts from a newly constructed official environment and freshly reset policy.
 
-| Arm | steps `< t_switch` | steps `>= t_switch` |
+| Arm | observations `[0:t_switch]` | observations `[t_switch:]` |
 |---|---|---|
 | CC | clean | clean |
 | CS | clean | shifted |
 | SC | shifted | clean |
 | SS | shifted | shifted |
+
+Here Python-style `[0:50]` means observation indices 0 through 49.
 
 Rules common to all four arms:
 
@@ -285,21 +314,58 @@ Rules common to all four arms:
 9. no artificial state alignment at the switch;
 10. if an arm terminates before the switch, retain it as an absorbing outcome.
 
+### Observation/action switch mechanics
+
+For `obs_0`, the branch camera condition must be installed **before** `env.reset()` produces the
+initial observation.
+
+For `obs_t` where `t > 0`, the observation is returned by the preceding
+`env.step(action_{t-1})`. Therefore, to make `obs_50` the first future-condition observation,
+the camera must switch to the future condition **before** `env.step(action_49)`.
+
+This convention guarantees:
+
+- `action_49` is still determined by prefix-condition `obs_49`;
+- `action_50` first observes future-condition `obs_50`;
+- no extra environment step or policy query is introduced;
+- the original horizon is unchanged;
+- no image or simulator state is copied or restored.
+
+The future camera seam must record at each transition:
+
+```text
+observation_index
+preceding_action_index
+requested_camera_mode
+actual_camera_parameters
+```
+
+and must verify that camera-parameter mutation does not change physics-relevant model/state identity.
+
 ### Prefix matching evidence
 
 Although branches are separate reexecutions, CC and CS receive the same prefix treatment and paired
 noise before `t_switch`; SC and SS do likewise.
 
-The runner should therefore retain a prefix audit:
+For CC vs CS and for SC vs SS, every observation/action index strictly before `t_switch` has the
+same root, camera condition, paired flow-noise bytes, policy identity, processor identity and runtime
+identity. Therefore any unexplained same-prefix disagreement is a **technical
+matching/reexecution failure**, not a scientific treatment effect.
 
-- terminal status before switch;
-- per-step policy-query index;
-- paired-noise key/hash;
+The runner must audit at least:
+
+- paired noise hash;
+- policy-query / observation-action index;
+- requested and actual camera mode;
 - action vector;
-- selected proprio/task progress diagnostics.
+- terminal state.
 
-A disagreement before the switch is a reexecution/matching failure to be reported, not silently
-treated as history effect.
+Optional low-cost task-progress evidence may be retained, but it is not required for the matching
+gate.
+
+The one extra clean duplicate per root is a **same-condition duplicate discrepancy /
+reexecution-noise floor** check. With only one extra duplicate per root it must not be described as a
+formal variance estimate.
 
 ## 6. Paired policy randomness
 
@@ -322,24 +388,36 @@ branch's own current processed observation, so its resulting action is allowed t
 
 ### Preferred implementation seam
 
-Use the already checked-in explicit path:
+Preserve the official select-action semantics end to end:
 
 ```text
-current branch observation
- -> official preprocessors
- -> deterministic flow noise for (root, step)
- -> policy.predict_action_chunk(batch, noise=xi_root_step)
- -> take the action required by frozen n_action_steps=1 semantics
- -> official postprocessors
+official rollout
+ -> policy.select_action(current observation)
+ -> prefix-reexecution wrapper derives paired flow noise
+ -> remote client select_action(features, explicit_noise)
+ -> DCU worker
+ -> official SmolVLAPolicy.select_action(batch, noise=explicit_noise)
+ -> official postprocessor
  -> env.step
 ```
 
-This preserves closed-loop dependence on the current observation while matching stochastic input.
+The implementation must **not** manually call `predict_action_chunk` and then choose an action.
+With frozen `n_action_steps=1`, the official select-action queue semantics already provide one
+environment action per query while generating a new chunk whenever the queue is empty.
 
-Before pilot runtime, one bounded validation must show that the explicit one-action path is
-compatible with the frozen `n_action_steps=1` policy contract. If it materially changes action
-semantics relative to the official closed-loop path, stop and redesign the RNG seam; do not fall
-back to claiming that episode-level native seeding is matched noise.
+Thus the only intended policy-path change is explicit matched noise transported through the existing
+remote select-action seam. The action remains a function of the branch's current observation and its
+paired noise.
+
+**G-P1 PASS** requires static/fake evidence that the path still uses:
+
+- the same official `SmolVLAPolicy.select_action`;
+- the same official env/policy pre/postprocessors;
+- the same `n_action_steps=1` queue semantics;
+- explicit matched noise as the only action-generation change.
+
+If this cannot be preserved, stop and redesign the RNG seam; do not substitute episode-level native
+seeding and call it matched noise.
 
 ### Other RNGs
 
@@ -418,6 +496,12 @@ predeclared downgrade to 5° would require a new reviewed pilot version.
 "Clean future" always means a clean render of **that branch's current physical state**. It never
 means the image from CC or another rollout.
 
+**G-P2 PASS** requires static/fake evidence that the observation-index convention above is exact,
+the camera condition for `obs_0` is established before reset returns the initial observation, the
+future condition for `obs_50` is established before `env.step(action_49)`, and the switch causes
+no extra `env.step`, policy query, horizon change, action/image copying, or physics-relevant
+identity change.
+
 ## 9. Estimands and metrics
 
 Let `Y_arm` be final task success within the original horizon.
@@ -442,21 +526,26 @@ Interpretation:
 
 For the reexecution route, `L` is explicitly **not** a pure physical-state-mediated effect.
 
-### Trajectory metrics
-
-Keep four metrics only.
+### Primary paper quantities and diagnostics
 
 **Primary**
 
-1. final success `Y`.
+1. final success `Y`;
+2. `L = E[Y_CC - Y_SC]`: persistent total aftereffect / operational hysteresis under clean future;
+3. `I = (Y_SC - Y_SS) - (Y_CC - Y_CS)`: history × future-corruption interaction.
 
-**Diagnostic**
+`G_C` and `G_S` remain necessary intervention/future-effect estimands, but they cannot by
+themselves satisfy the Paper-1 signal gate.
 
-2. terminal step / remaining-budget survival;
-3. action disagreement relative to the matched same-prefix comparator, summarized per root and
-   split pre/post switch;
-4. task-progress/contact state trajectory using already available success/contact/grasp/carried
-   annotations where the ordinary runner can obtain them without exact-state instrumentation.
+**Diagnostics**
+
+- terminal step / remaining-budget survival;
+- post-switch action divergence;
+- task-progress / predicate evidence.
+
+Contact/grasp trajectory evidence is optional only if the ordinary runner can expose it at low
+engineering cost. Do not rebuild exact-state contact instrumentation merely to reproduce the old
+route.
 
 Do not promote every available state field to a paper metric.
 
@@ -467,11 +556,15 @@ Do not promote every available state field to a paper metric.
 - Under a clean prefix, CC vs CS estimates the closed-loop effect of future camera corruption under
   matched root and policy randomness.
 - Under a shifted prefix, SC vs SS estimates the analogous future-camera effect.
-- CC vs SC estimates the **total aftereffect / history burden** accumulated under different prefix
-  observation histories when both subsequently run clean.
+- CC vs SC estimates the **persistent total aftereffect / history burden** accumulated under
+  different prefix observation histories when both subsequently run clean. Operationally, this is
+  closed-loop observation-corruption **hysteresis**: persistence after the corruption is removed.
 - The difference-of-differences `I` asks whether shifted history changes future-corruption
-  sensitivity.
+  susceptibility.
 - Fresh reexecution trades exact-state branching for a simpler matched-history decomposition.
+
+"Hysteresis" here is strictly an operational sequential-intervention term. It does not imply
+identical physical state, identical-state mediation, or an exact-state hysteresis experiment.
 
 ### Forbidden
 
@@ -500,8 +593,10 @@ It must test four things:
 1. same-root fresh reexecution is stable enough for matched comparisons;
 2. the +15° camera intervention changes closed-loop behavior without degenerating into universal
    immediate failure;
-3. CC/CS/SC/SS yields a nontrivial history/future structure on at least some roots;
-4. trajectory diagnostics expose something beyond a flat success-rate drop.
+3. corruption removal leaves a repeated **history-specific persistent aftereffect** rather than
+   only an immediate robustness drop;
+4. accumulated shifted history changes subsequent susceptibility and/or leaves post-switch
+   trajectory persistence beyond one-step action disagreement.
 
 ### Frozen pilot matrix
 
@@ -515,7 +610,9 @@ Corruption strength: **+15° agentview yaw** only.
 
 Main branches: **4 per root** = **32 main rollouts**.
 
-Reexecution control: one extra clean duplicate per root = **8 control rollouts**.
+Reexecution control: one extra clean duplicate per root = **8 control rollouts**, used only to
+measure the same-condition duplicate discrepancy / reexecution-noise floor, not a formal variance
+estimate.
 
 Total: **40 rollouts**.
 
@@ -547,20 +644,30 @@ All are required to continue:
 3. **Matched randomness**
    - every matched policy query records the same noise key/hash across arms;
    - different observations may produce different actions.
-4. **Nondegenerate signal**
-   - not all 32 main branches have identical trajectories/outcomes;
-   - shifted arms are not near-universally terminal before useful post-switch observation;
-   - at least one of `G_C`, `G_S`, `L`, or `I` shows a root-level pattern large enough to
-     justify precision estimation, or trajectory diagnostics show a clear repeated divergence
-     pattern tied to history/future condition.
+4. **Intervention gate — necessary but not sufficient for a paper**
+   - at least one of `G_C`, `G_S`, or a corresponding trajectory response demonstrates that the
+     +15° shift is not behaviorally inert;
+   - shifted arms are not near-universally terminal before useful post-switch observation.
+5. **Paper-signal gate — required to authorize a full study**
+   - a history-specific persistent structure is visible through `L` and/or `I`, together with
+     corresponding post-switch trajectory persistence;
+   - the structure is observed as a repeated qualitative pattern in **both task 0 and task 4**;
+   - it is not plausibly explained by the clean same-condition duplicate discrepancy;
+   - it appears after corruption removal / after the switch, rather than only as a one-step action
+     difference at the switching boundary.
 
-The pilot is descriptive; no p-value threshold is a pass criterion.
+The pilot is descriptive; no p-value significance threshold is required.
+
+If `G_C` and/or `G_S` are clearly nonzero but `L ≈ 0`, `I ≈ 0`, and there is no persistent
+post-switch trajectory signature, the route is **PIVOT**, even if camera corruption clearly reduces
+success. Do not scale that outcome into a generic robustness paper.
 
 ### Kill criteria
 
 Stop or redesign before a full study if any holds:
 
-- same-condition reexecution variance is comparable to or larger than the treatment contrasts;
+- same-condition duplicate discrepancy / reexecution-noise floor is comparable to or larger than
+  the history-specific contrasts;
 - paired flow-noise semantics cannot be implemented without changing the frozen policy action
   contract;
 - camera shift cannot be applied as observation-only intervention without unintended physics/time
@@ -568,8 +675,9 @@ Stop or redesign before a full study if any holds:
 - the shift has no measurable behavioral/trajectory effect on the development roots;
 - the shift causes near-universal immediate failure and therefore cannot expose history/future
   decomposition;
-- CC/SC history burden is indistinguishable from ordinary reexecution noise on development data and
-  diagnostics add no repeated structure;
+- task 0 and task 4 do not both show repeated post-switch history-specific persistence beyond the
+  clean duplicate discrepancy, including the case where `G_C/G_S` are nonzero but `L` and `I`
+  are approximately zero with no persistent trajectory signature;
 - technical completion is insufficient for root-level matched estimates;
 - implementation/runtime cost grows back toward exact-state-infrastructure scale.
 
@@ -609,8 +717,8 @@ pilot precision support it, but that scale is not a current execution requiremen
 ### Where paper value can still come from
 
 The potentially publishable object is not reexecution. It is the empirical characterization of
-**closed-loop history burden** and its interaction with subsequent observation corruption under a
-matched, root-clustered protocol:
+**closed-loop observation-corruption hysteresis / persistent aftereffect** and its interaction with
+subsequent observation corruption under a matched, root-clustered protocol:
 
 - future corruption conditional on prefix history;
 - total aftereffect of corrupted history;
@@ -634,8 +742,17 @@ action error alone, a CCF-B / Zone-3-class paper remains plausible within the cu
 
 No code is proposed in this commit.
 
-If this design is approved, implementation should be a thin branch-study layer rather than a copy
-of the exact-state stack:
+If this design is approved, future implementation is limited to three narrow change classes:
+
+1. **explicit-noise support on the existing remote `select_action` transport**, carrying
+   features + paired noise into official
+   `SmolVLAPolicy.select_action(batch, noise=explicit_noise)` without changing queue semantics;
+2. **an observation-indexed camera controller** implementing the frozen
+   `obs_t -> action_t -> env.step -> obs_{t+1}` timing convention;
+3. **a thin four-arm fresh-reexecution orchestrator/evidence layer** reusing the ordinary baseline
+   runtime, official processors, worker client, terminal handling and evidence conventions.
+
+A likely file shape remains:
 
 ```text
 configs/replayvla/p1_prefix_reexecution_pilot.yaml
@@ -643,20 +760,29 @@ scripts/p1_prefix_reexecution.py
 tests/test_p1_prefix_reexecution.py
 ```
 
-The runner should reuse the ordinary baseline runtime builder, processor path, worker client,
-terminal handling and evidence conventions.
+Do not copy or adapt the F3N orchestration, `m1_state_replay`, null oracle, or exact-state owner
+closure into the new route.
 
 Focused fake/unit tests should cover:
 
 - exact 4-arm branch schedule;
 - fresh construction per arm;
-- switch boundary `<50` vs `>=50`;
+- exact off-by-one observation semantics:
+  - CC/CS: `obs[0:50]` clean;
+  - SC/SS: `obs[0:50]` shifted;
+  - CC/SC: `obs[50:]` clean;
+  - CS/SS: `obs[50:]` shifted;
+- camera mode for `obs_0` is installed before reset produces the initial observation;
+- future camera mode for `obs_50` is installed before `env.step(action_49)`;
 - absorbing pre-switch terminal;
 - paired noise key excludes arm and includes root/step;
 - matched key -> same noise bytes, while action is never copied;
+- official `select_action` and `n_action_steps=1` queue semantics are preserved under explicit
+  noise transport;
 - camera mode changes observation-side path only;
 - no extra policy query/env step at switch;
-- CC/CS and SC/SS prefix audit;
+- CC/CS and SC/SS same-prefix audit checks noise hash, query index, camera mode, action and terminal
+  state;
 - technical failure preserved with no retry;
 - root-level clustering metadata;
 - held-out schedule cannot be changed after freeze.
@@ -665,25 +791,34 @@ No exact-state capture/restore helper should be imported by the new runner.
 
 ## 15. Answers to the required candidate questions
 
-1. **Scientific claim:** accumulated closed-loop observation history and future observation
-   corruption can be separately characterized by matched fresh reexecution.
+1. **Scientific claim:** matched fresh reexecution measures whether observation corruption leaves
+   persistent behavioral aftereffects after the corruption is removed, and whether accumulated
+   corrupted history changes sensitivity to subsequent corruption.
 2. **Why no exact restore:** all branch-specific hidden/policy/controller state is regenerated by
    ordinary initialization plus full prefix execution.
 3. **Branch construction:** four complete fresh rollouts with clean/shifted mode selected by prefix
    and future relative to a fixed switch.
 4. **Allowed causal claims:** conditional future-corruption effects and total history aftereffect.
 5. **Forbidden claims:** identical-state counterfactual, pure physical drift/history-only mediation.
-6. **Policy stochasticity:** deterministic root/step explicit flow-noise keys, never fixed actions.
+6. **Policy stochasticity:** deterministic root/step explicit flow-noise keys transported into the
+   official `SmolVLAPolicy.select_action(batch, noise=...)`; never fixed actions and never manual
+   `predict_action_chunk` selection.
 7. **Camera intervention:** one observation-only agentview yaw seam; +15° in the pilot.
-8. **Switch:** fixed absolute index; pilot uses 50.
+8. **Switch:** fixed policy observation/action index; pilot uses 50, meaning `obs_0..obs_49` are
+   prefix observations and `obs_50` is the first future-condition observation.
 9. **Pilot size:** 2 tasks × 4 roots/task × 4 arms + 8 clean repeats.
 10. **Pilot branch count:** 32 main + 8 controls = **40 rollouts**.
-11. **PASS/KILL:** defined in section 11.
+11. **PASS/KILL:** intervention activity alone is insufficient; full-study continuation requires
+    repeated history-specific persistent structure in both development tasks beyond the clean
+    duplicate discrepancy.
 12. **Full study:** task-equal root-clustered held-out study only after pilot success.
 13. **Reusable code:** ordinary baseline runner, CPU/DCU policy seam, processors, explicit-noise API,
     evidence/statistics conventions.
 14. **Bypass:** all exact-state restore/null/F3b machinery.
 15. **Largest rejection risk:** result collapses to ordinary camera-robustness curves.
 16. **1–2 month feasibility:** plausible if the two narrow implementation gates close quickly and
-    the pilot produces nontrivial structure; otherwise stop early.
-17. **Recommendation:** **CONDITIONAL GO**.
+    the pilot produces history-specific persistent structure; otherwise stop early.
+17. **Pre-pilot gates:** G-P1 official select-action explicit-noise preservation and G-P2 exact
+    observation-indexed camera switching must both pass static/fake review before any small real
+    micro-validation is worth authorizing.
+18. **Recommendation:** **CONDITIONAL GO**.
