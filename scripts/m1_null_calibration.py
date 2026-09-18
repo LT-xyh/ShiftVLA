@@ -3112,7 +3112,7 @@ def _attempt_failure(
         identity = _proc_start_identity(os.getpid())
     except Exception:
         identity = None
-    protocol = {"construction_reset_count": 0}
+    protocol = {"construction_reset_count": 1 if failure_phase == "post_construction" else 0}
     protocol.update({field_name: 0 for field_name in FORBIDDEN_PROTOCOL_FIELDS})
     protocol.update(
         {
@@ -3150,7 +3150,12 @@ def execute_attempt(
     adapter: Any = None
     result: dict[str, Any] | None = None
     actions: np.ndarray
-    failure_phase = "pre_construction"
+    # Until the adapter factory returns, a factory exception may have occurred
+    # before, during, or after native environment construction.  Treat it as
+    # unknown rather than falsely triggering the F3N pre-construction stop.
+    # Canonical worker-binding failures are classified separately in
+    # _worker_main before execute_attempt is entered.
+    failure_phase = "unknown"
     try:
         config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
         strict = bool(config.get("strict_runtime_contract"))
@@ -3401,6 +3406,7 @@ def execute_attempt(
         result["close_evidence"] = close_evidence
         if not close_evidence["success"] and result.get("status") == "completed":
             result["status"] = "failed"
+            result["failure_phase"] = "post_construction"
             result["error"] = f"close cleanup failed: {close_evidence.get('error', 'unknown error')}"
         elif not close_evidence["success"] and close_evidence.get("error"):
             result["error"] = (
@@ -3778,7 +3784,6 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
     }
     if config.get("runtime_contract") == "m1_sa_native_v1":
         run_spec_body["execution_commit"] = _repo_head()
-    }
     run_spec = {**run_spec_body, "run_spec_sha256": sha256_bytes(canonical_json(run_spec_body).encode("utf-8"))}
     write_json_atomic(run_spec_path, run_spec)
     pair_registry_body = {
