@@ -1,7 +1,8 @@
 """One-shot ReplayVLA-P1 repo-authorized microvalidation harness.
 
 Execution order:
-    focused pytest -> MV-P2 CPU camera seam -> MV-P1 DCU explicit-noise select_action -> stop
+    focused pytest -> MV-P2-A same-state camera -> MV-P2-B switch lifecycle
+    -> MV-P1 DCU explicit-noise select_action -> stop
 
 This is not a scientific rollout and never computes paper estimands.
 """
@@ -149,6 +150,58 @@ def _image_identity(observation: Mapping[str, Any]) -> dict[str, Any]:
     return _array_identity(image)
 
 
+def _same_state_image_intervention_gate(
+    clean: Mapping[str, Any],
+    shifted: Mapping[str, Any],
+    restored: Mapping[str, Any],
+) -> dict[str, Any]:
+    clean_shape = clean.get("shape")
+    shifted_shape = shifted.get("shape")
+    restored_shape = restored.get("shape")
+    clean_dtype = clean.get("dtype")
+    shifted_dtype = shifted.get("dtype")
+    restored_dtype = restored.get("dtype")
+    clean_sha = clean.get("sha256")
+    shifted_sha = shifted.get("sha256")
+    restored_sha = restored.get("sha256")
+
+    result: dict[str, Any] = {
+        "status": "BLOCKED",
+        "shape_equal": clean_shape == shifted_shape == restored_shape,
+        "dtype_equal": clean_dtype == shifted_dtype == restored_dtype,
+        "clean_vs_shifted_different": bool(clean_sha != shifted_sha),
+        "clean_vs_restored_exact": bool(clean_sha == restored_sha),
+    }
+    if not result["shape_equal"]:
+        result["reason"] = "agentview observation shape changed across camera-only intervention"
+        return result
+    if clean_shape != [360, 360, 3]:
+        result["reason"] = "agentview observation shape does not match frozen 360x360x3 schema"
+        return result
+    if not result["dtype_equal"]:
+        result["reason"] = "agentview observation dtype changed across camera-only intervention"
+        return result
+    if clean_dtype != "uint8":
+        result["reason"] = "agentview observation dtype does not match frozen uint8 schema"
+        return result
+    if not all(isinstance(value, str) and len(value) == 64 for value in (clean_sha, shifted_sha, restored_sha)):
+        result["reason"] = "agentview observation SHA evidence is invalid"
+        return result
+    if not result["clean_vs_shifted_different"]:
+        result["reason"] = (
+            "camera quaternion mutation did not alter the policy-visible agentview observation"
+        )
+        return result
+    if not result["clean_vs_restored_exact"]:
+        result["reason"] = (
+            "restored clean camera did not reproduce the original policy-visible observation"
+        )
+        return result
+    result["status"] = "PASS"
+    result["reason"] = None
+    return result
+
+
 def locate_single_libero_subenv(vector_env: Any) -> Any:
     num_envs = getattr(vector_env, "num_envs", None)
     if isinstance(num_envs, bool) or int(num_envs if num_envs is not None else -1) != 1:
@@ -231,14 +284,14 @@ def _install_cpu_runtime_environment(baseline: Mapping[str, Any], preflight: Map
     }
 
 
-def run_mv_p2(
+def run_mv_p2_a(
     preflight: Mapping[str, Any],
     *,
     runtime_builder: Callable[..., Mapping[str, Any]] | None = None,
     select_init_state: Callable[[Any, int], Mapping[str, Any]] | None = None,
     controller_factory: Callable[[], AgentviewYawController] = AgentviewYawController,
 ) -> dict[str, Any]:
-    """Run camera-only real microvalidation; never creates a policy or calls outer env.step."""
+    """MV-P2-A: same-current-state camera intervention with exact image gates."""
 
     from scripts import dcu_preflight, m0_baseline_a
 
@@ -311,15 +364,21 @@ def run_mv_p2(
         if not np.array_equal(restored_pos, clean_pos) or restored_fovy != clean_fovy:
             raise MicrovalidationError("camera position or fovy changed during quaternion-only mutation")
         if wrapped.action_index != 0:
-            raise MicrovalidationError("MV-P2 must not call policy-indexed environment step")
+            raise MicrovalidationError("MV-P2-A must not call policy-indexed environment step")
+        image_gate = _same_state_image_intervention_gate(
+            clean_image, shifted_image, restored_image
+        )
 
-        return {
-            "status": "PASS",
-            "phase": "MV-P2",
+        result = {
+            "status": image_gate["status"],
+            "phase": "MV-P2-A",
             "scientific_rollout": False,
             "policy_created": False,
             "outer_env_step_calls": 0,
             "policy_query_count": 0,
+            "model_query_count": 0,
+            "dcu_worker_started": False,
+            "normal_reset_count": 1,
             "init_state": init_evidence,
             "pre_normal_reset_physics": pre_reset_public,
             "reset_info": {
@@ -349,12 +408,187 @@ def run_mv_p2(
                 "clean_agentview": clean_image,
                 "shifted_agentview": shifted_image,
                 "restored_agentview": restored_image,
+                "shape_equal": image_gate["shape_equal"],
+                "dtype_equal": image_gate["dtype_equal"],
+                "clean_vs_shifted_different": image_gate["clean_vs_shifted_different"],
+                "clean_vs_restored_exact": image_gate["clean_vs_restored_exact"],
+                "gate_reason": image_gate["reason"],
                 "branch_local_current_state_refresh": True,
             },
             "settle_steps": {
                 "count_as_policy_queries": False,
                 "count_toward_switch_index": False,
                 "paired_noise_query_index_after_reset": 0,
+            },
+        }
+        if result["status"] != "PASS":
+            result["failure"] = {
+                "type": "IMAGE_INTERVENTION_GATE",
+                "message": str(image_gate["reason"]),
+            }
+        return result
+    finally:
+        if runtime:
+            close_envs = runtime.get("close_envs")
+            envs = runtime.get("envs")
+            if callable(close_envs) and envs is not None:
+                close_envs(envs)
+
+
+def run_mv_p2_b(
+    preflight: Mapping[str, Any],
+    *,
+    runtime_builder: Callable[..., Mapping[str, Any]] | None = None,
+    select_init_state: Callable[[Any, int], Mapping[str, Any]] | None = None,
+    dummy_action_factory: Callable[[], Any] | None = None,
+    controller_factory: Callable[[], AgentviewYawController] = AgentviewYawController,
+) -> dict[str, Any]:
+    """MV-P2-B: fresh-runtime CS switch lifecycle with 50 official dummy actions."""
+
+    from scripts import dcu_preflight, m0_baseline_a
+
+    builder = runtime_builder or dcu_preflight.build_cpu_environment_runtime
+    selector = select_init_state or m0_baseline_a.select_init_state_before_reset
+    if dummy_action_factory is None:
+        from lerobot.envs.libero import get_libero_dummy_action
+
+        dummy_action_factory = get_libero_dummy_action
+
+    runtime: Mapping[str, Any] | None = None
+    try:
+        runtime = builder(preflight, phase="compare")
+        vector_env = runtime.get("env")
+        if vector_env is None:
+            raise MicrovalidationError("MV-P2-B CPU environment runtime did not return env")
+        subenv = locate_single_libero_subenv(vector_env)
+        init_evidence = dict(selector(vector_env, INIT_STATE_ID))
+
+        dummy_action = np.asarray(dummy_action_factory(), dtype=np.float32)
+        if dummy_action.shape != (7,) or not np.isfinite(dummy_action).all():
+            raise MicrovalidationError("official LIBERO dummy action must be finite float32 shape (7,)")
+
+        controller = controller_factory()
+        wrapped = ObservationIndexedCameraWrapper(subenv, arm="CS", controller=controller)
+        current_observation, reset_info = wrapped.reset(seed=FROZEN_ENVIRONMENT_SEED)
+        if wrapped.action_index != 0:
+            raise MicrovalidationError("MV-P2-B action index must start at zero after reset")
+        if len(wrapped.camera_evidence_rows) != 1:
+            raise MicrovalidationError("MV-P2-B reset must publish exactly one obs_0 camera row")
+        reset_row = dict(wrapped.camera_evidence_rows[0])
+        if reset_row.get("observation_index") != 0 or reset_row.get("requested_camera_mode") != "clean":
+            raise MicrovalidationError("MV-P2-B CS obs_0 must be clean")
+
+        obs49_identity: dict[str, Any] | None = None
+        obs49_camera: dict[str, Any] | None = None
+        obs50_identity: dict[str, Any] | None = None
+        obs50_camera: dict[str, Any] | None = None
+        terminal_before_switch: dict[str, Any] | None = None
+        wrapper_step_calls = 0
+
+        for action_index in range(50):
+            if wrapped.action_index != action_index:
+                raise MicrovalidationError("MV-P2-B action index advanced outside wrapper.step")
+            if action_index == 49:
+                obs49_identity = _image_identity(current_observation)
+                if len(wrapped.camera_evidence_rows) != 50:
+                    raise MicrovalidationError("MV-P2-B expected obs_0..obs_49 camera evidence before action_49")
+                obs49_camera = dict(wrapped.camera_evidence_rows[-1])
+                if (
+                    obs49_camera.get("observation_index") != 49
+                    or obs49_camera.get("requested_camera_mode") != "clean"
+                ):
+                    raise MicrovalidationError("MV-P2-B CS obs_49 must remain clean")
+
+            result = wrapped.step(np.array(dummy_action, dtype=np.float32, copy=True))
+            wrapper_step_calls += 1
+            if not isinstance(result, tuple) or len(result) != 5:
+                raise MicrovalidationError("LeRobot LiberoEnv.step must return five values")
+            current_observation, _, terminated, truncated, _ = result
+            if bool(terminated) or bool(truncated):
+                terminal_before_switch = {
+                    "preceding_action_index": action_index,
+                    "result_observation_index": action_index + 1,
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                }
+                return {
+                    "status": "BLOCKED",
+                    "phase": "MV-P2-B",
+                    "scientific_rollout": False,
+                    "arm": "CS",
+                    "switch_index": 50,
+                    "normal_reset_count": 1,
+                    "wrapper_step_calls": wrapper_step_calls,
+                    "policy_query_count": 0,
+                    "model_query_count": 0,
+                    "dcu_worker_started": False,
+                    "terminal_before_switch": terminal_before_switch,
+                    "init_state": init_evidence,
+                    "reset_info": {
+                        "type": type(reset_info).__name__,
+                        "keys": sorted(reset_info) if isinstance(reset_info, Mapping) else None,
+                    },
+                    "settle_steps": {
+                        "count_as_policy_queries": False,
+                        "count_as_wrapper_indices": False,
+                        "count_toward_switch_index": False,
+                    },
+                }
+
+        if wrapped.action_index != 50 or wrapper_step_calls != 50:
+            raise MicrovalidationError("MV-P2-B must complete exactly 50 wrapper steps")
+        if len(wrapped.camera_evidence_rows) != 51:
+            raise MicrovalidationError("MV-P2-B must publish obs_0..obs_50 camera evidence")
+
+        for row in wrapped.camera_evidence_rows[:50]:
+            if (
+                row.get("observation_index") not in range(50)
+                or row.get("requested_camera_mode") != "clean"
+            ):
+                raise MicrovalidationError("MV-P2-B CS obs_0..obs_49 must all request clean camera")
+        obs50_camera = dict(wrapped.camera_evidence_rows[-1])
+        if (
+            obs50_camera.get("observation_index") != 50
+            or obs50_camera.get("preceding_action_index") != 49
+            or obs50_camera.get("requested_camera_mode") != "shifted"
+        ):
+            raise MicrovalidationError(
+                "MV-P2-B action_49 must request shifted camera for obs_50"
+            )
+        obs50_identity = _image_identity(current_observation)
+        if obs49_identity is None or obs49_camera is None:
+            raise MicrovalidationError("MV-P2-B failed to retain obs_49 evidence")
+
+        return {
+            "status": "PASS",
+            "phase": "MV-P2-B",
+            "scientific_rollout": False,
+            "arm": "CS",
+            "switch_index": 50,
+            "normal_reset_count": 1,
+            "wrapper_step_calls": wrapper_step_calls,
+            "policy_query_count": 0,
+            "model_query_count": 0,
+            "dcu_worker_started": False,
+            "terminal_before_switch": terminal_before_switch,
+            "init_state": init_evidence,
+            "reset_info": {
+                "type": type(reset_info).__name__,
+                "keys": sorted(reset_info) if isinstance(reset_info, Mapping) else None,
+            },
+            "dummy_action": _array_identity(dummy_action),
+            "obs49": {
+                "agentview": obs49_identity,
+                "camera_evidence": obs49_camera,
+            },
+            "obs50": {
+                "agentview": obs50_identity,
+                "camera_evidence": obs50_camera,
+            },
+            "settle_steps": {
+                "count_as_policy_queries": False,
+                "count_as_wrapper_indices": False,
+                "count_toward_switch_index": False,
             },
         }
     finally:
@@ -564,7 +798,8 @@ def run_sequence(
     work_dir: Path,
     physical_device: int,
     pytest_runner: Callable[[], Mapping[str, Any]] = run_focused_pytest,
-    p2_runner: Callable[..., Mapping[str, Any]] = run_mv_p2,
+    p2a_runner: Callable[..., Mapping[str, Any]] = run_mv_p2_a,
+    p2b_runner: Callable[..., Mapping[str, Any]] = run_mv_p2_b,
     p1_runner: Callable[..., Mapping[str, Any]] = run_mv_p1,
 ) -> dict[str, Any]:
     if output.exists():
@@ -589,7 +824,11 @@ def run_sequence(
         "execution_commit": None,
         "status": "BLOCKED",
         "focused_pytest": {"status": "NOT_RUN"},
-        "MV-P2": {"status": "NOT_RUN"},
+        "MV-P2": {
+            "status": "NOT_RUN",
+            "same_state_camera": {"status": "NOT_RUN"},
+            "switch_lifecycle": {"status": "NOT_RUN"},
+        },
         "MV-P1": {"status": "NOT_RUN"},
         "stop_after": "MV-P1",
         "retry": 0,
@@ -607,10 +846,18 @@ def run_sequence(
         evidence["config_identity"] = identity
         evidence["cpu_environment"] = _install_cpu_runtime_environment(baseline, preflight)
 
-        p2 = dict(p2_runner(preflight))
-        evidence["MV-P2"] = p2
-        if p2.get("status") != "PASS":
-            raise MicrovalidationError("MV-P2 did not PASS")
+        p2a = dict(p2a_runner(preflight))
+        evidence["MV-P2"]["same_state_camera"] = p2a
+        if p2a.get("status") != "PASS":
+            evidence["MV-P2"]["status"] = "BLOCKED"
+            raise MicrovalidationError("MV-P2-A did not PASS")
+
+        p2b = dict(p2b_runner(preflight))
+        evidence["MV-P2"]["switch_lifecycle"] = p2b
+        if p2b.get("status") != "PASS":
+            evidence["MV-P2"]["status"] = "BLOCKED"
+            raise MicrovalidationError("MV-P2-B did not PASS")
+        evidence["MV-P2"]["status"] = "PASS"
 
         preflight_path = Path(identity["preflight_config"])
         expected_device = int(preflight["runtime"]["compare_physical_device"])
