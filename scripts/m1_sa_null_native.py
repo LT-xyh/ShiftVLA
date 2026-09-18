@@ -517,6 +517,8 @@ class FailFastProcessRunner:
         self.blocked = False
         self.block_reason: str | None = None
         self.dynamic_launches = 0
+        self.completed_attempts = 0
+        self._completed_sides: dict[str, set[str]] = {}
 
     def __call__(self, request: Mapping[str, Any]) -> Any:
         from scripts import m1_null_calibration as nullcal
@@ -530,6 +532,12 @@ class FailFastProcessRunner:
             return value
         self.dynamic_launches += 1
         value = self.delegate(request)
+        if isinstance(value, Mapping) and value.get("status") == "completed":
+            self.completed_attempts += 1
+            pair_id = str(request.get("pair_id", ""))
+            side = str(request.get("side", ""))
+            if pair_id and side in {"A", "B"}:
+                self._completed_sides.setdefault(pair_id, set()).add(side)
         if (
             isinstance(value, Mapping)
             and value.get("status") != "completed"
@@ -538,6 +546,10 @@ class FailFastProcessRunner:
             self.blocked = True
             self.block_reason = str(value.get("error", "pre-construction worker failure"))
         return value
+
+    @property
+    def completed_pairs(self) -> int:
+        return sum(sides == {"A", "B"} for sides in self._completed_sides.values())
 
 
 def renderer_entry_check(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -642,8 +654,8 @@ def execute_f3n(
             "status": "BLOCKED",
             "stage": "null_runner",
             "reason": f"{type(exc).__name__}: {exc}",
-            "completed_pairs": 0,
-            "completed_attempts": 0,
+            "completed_pairs": runner.completed_pairs,
+            "completed_attempts": runner.completed_attempts,
             "technical_failures": 1,
             "f3n": {
                 **base_meta,
