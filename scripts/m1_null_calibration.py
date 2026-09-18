@@ -3150,12 +3150,11 @@ def execute_attempt(
     adapter: Any = None
     result: dict[str, Any] | None = None
     actions: np.ndarray
-    # Until the adapter factory returns, a factory exception may have occurred
-    # before, during, or after native environment construction.  Treat it as
-    # unknown rather than falsely triggering the F3N pre-construction stop.
-    # Canonical worker-binding failures are classified separately in
-    # _worker_main before execute_attempt is entered.
-    failure_phase = "unknown"
+    # Validation/runtime-identity checks below run before the constructor and
+    # are therefore genuine pre-construction failures. Once the constructor
+    # is entered, an exception may occur before, during, or after environment
+    # creation, so that interval is deliberately classified as unknown.
+    failure_phase = "pre_construction"
     try:
         config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
         strict = bool(config.get("strict_runtime_contract"))
@@ -3181,6 +3180,7 @@ def execute_attempt(
         if strict:
             _strict_task(config.get("task"), field_name="task")
             _runtime_identity_audit(config)
+        failure_phase = "unknown"
         adapter = adapter_factory(config) if adapter_factory is not None else _construct_adapter(config)
         failure_phase = "post_construction"
         windows = _window_map_from_registry(attempt)
