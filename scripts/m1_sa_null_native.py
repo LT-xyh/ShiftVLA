@@ -213,6 +213,8 @@ def validate_native_config(
         raise NativeQualificationError(f"LIBERO assets unavailable: {asset_path}")
 
     registry = _mapping(config.get("registry"), "registry")
+    if registry.get("hash_domain") != "registry_self_hash":
+        raise NativeQualificationError("derived registry hash domain drift")
     if str(registry.get("sha256")).lower() != EXPECTED_REGISTRY_SHA256:
         raise NativeQualificationError("derived registry declaration drift")
     # The strict loader verifies the registry self-hash, rebound source bytes,
@@ -225,6 +227,8 @@ def validate_native_config(
 
     # Action semantic bytes are checked using no-pickle NumPy loading.
     action = _mapping(config.get("action_tape"), "action_tape")
+    if action.get("hash_domain") != "float32_c_order_semantic_bytes":
+        raise NativeQualificationError("action tape hash domain drift")
     import numpy as np
 
     tape_path = _resolve(action["path"])
@@ -264,8 +268,10 @@ def validate_native_config(
         "libero_checkout": {"path": str(_resolve(checkout["path"])), "git_sha": actual_libero_head},
         "bddl": bddl_evidence,
         "init_state": init_evidence,
-        "registry_sha256": EXPECTED_REGISTRY_SHA256,
+        "registry_self_sha256": EXPECTED_REGISTRY_SHA256,
+        "registry_file_sha256": _sha256_file(_resolve(registry["path"])),
         "action_semantic_sha256": semantic_sha,
+        "action_file_sha256": _sha256_file(tape_path),
         "assets": {"path": str(asset_path.resolve()), "revision": assets["revision"]},
         "recovery_manifest": {
             "path": str(recovery_path.resolve()),
@@ -411,11 +417,24 @@ def construct_native_adapter(config: Mapping[str, Any]) -> Any:
 
     runtime_bundle = build_cpu_environment_runtime(config, phase="compare")
     tape_hash = str(_mapping(config["action_tape"], "action_tape")["sha256"])
-    return RuntimeAdapter.construct_fresh(
-        config,
-        runtime_builder=lambda _cfg: runtime_bundle,
-        tape_hash=tape_hash,
-    )
+    try:
+        return RuntimeAdapter.construct_fresh(
+            config,
+            runtime_builder=lambda _cfg: runtime_bundle,
+            tape_hash=tape_hash,
+        )
+    except Exception:
+        # The environment bundle already exists at this point. If adapter
+        # wrapping fails before ownership transfers to RuntimeAdapter, close
+        # the factory-owned environments best-effort instead of leaking them.
+        close_envs = runtime_bundle.get("close_envs") if isinstance(runtime_bundle, Mapping) else None
+        envs = runtime_bundle.get("envs") if isinstance(runtime_bundle, Mapping) else None
+        if callable(close_envs) and envs is not None:
+            try:
+                close_envs(envs)
+            except Exception:
+                pass
+        raise
 
 
 def _write_json_no_overwrite(path: Path, value: Mapping[str, Any]) -> None:
@@ -481,16 +500,13 @@ class FailFastProcessRunner:
             return value
         self.dynamic_launches += 1
         value = self.delegate(request)
-        if isinstance(value, Mapping) and value.get("status") != "completed":
-            protocol = value.get("protocol")
-            construction_count = (
-                protocol.get("construction_reset_count")
-                if isinstance(protocol, Mapping)
-                else None
-            )
-            if construction_count in (0, None):
-                self.blocked = True
-                self.block_reason = str(value.get("error", "pre-construction worker failure"))
+        if (
+            isinstance(value, Mapping)
+            and value.get("status") != "completed"
+            and value.get("failure_phase") == "pre_construction"
+        ):
+            self.blocked = True
+            self.block_reason = str(value.get("error", "pre-construction worker failure"))
         return value
 
 
@@ -539,10 +555,22 @@ def execute_f3n(
         raise NativeQualificationError("repository HEAD changed after F3N qualification")
 
     compact_root = ROOT / "runtime/replayvla-p1/f3n"
-    if (compact_root / "f3n_summary.json").exists():
-        raise NativeQualificationError("F3N compact summary already exists; no rerun is authorized")
+    compact_outputs = (
+        compact_root / "null_schedule.json",
+        compact_root / "pair_registry.json",
+        compact_root / "raw_evidence_manifest.json",
+        compact_root / "f3n_summary.json",
+    )
+    existing = [str(path) for path in compact_outputs if path.exists() or path.is_symlink()]
+    if existing:
+        raise NativeQualificationError(
+            "F3N compact evidence already exists; no rerun/overwrite is authorized: "
+            + ", ".join(existing)
+        )
 
     prepared = nullcal.prepare_run(config_path=config_target)
+    if prepared.run_spec.get("execution_commit") != qualification.get("execution_commit"):
+        raise NativeQualificationError("prepared F3N schedule is not bound to the qualified execution commit")
     schedule_record = _copy_bytes_no_overwrite(
         Path(prepared.run_spec_path), compact_root / "null_schedule.json"
     )
@@ -662,6 +690,50 @@ def main(argv: list[str] | None = None) -> int:
         }, sort_keys=True))
         return 0 if result.get("status") == "PASS" else 1
     except Exception as exc:
+        # A failed first qualification/execution must still leave compact,
+        # machine-readable BLOCKED evidence when the destination is fresh.
+        try:
+            if args.cmd == "qualify":
+                target = _resolve(args.output)
+                if not target.exists() and not target.is_symlink():
+                    _write_json_no_overwrite(
+                        target,
+                        {
+                            "phase": "F3N-static",
+                            "status": "BLOCKED",
+                            "stage": "static_qualification",
+                            "authority_commit": AUTHORITY_COMMIT,
+                            "execution_commit": _repo_head(),
+                            "config_path": str(_resolve(args.config).resolve()),
+                            "reason": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+            else:
+                target = ROOT / "runtime/replayvla-p1/f3n/f3n_summary.json"
+                if not target.exists() and not target.is_symlink():
+                    _write_json_no_overwrite(
+                        target,
+                        {
+                            "phase": "F3N",
+                            "status": "BLOCKED",
+                            "stage": "pre_cohort",
+                            "reason": f"{type(exc).__name__}: {exc}",
+                            "completed_pairs": 0,
+                            "completed_attempts": 0,
+                            "technical_failures": 0,
+                            "f3n": {
+                                "authority_commit": AUTHORITY_COMMIT,
+                                "execution_commit": _repo_head(),
+                                "qualification_path": str(_resolve(args.qualification).resolve()),
+                            },
+                        },
+                    )
+        except Exception as evidence_exc:
+            print(
+                f"F3N {args.cmd} compact BLOCKED evidence failed: "
+                f"{type(evidence_exc).__name__}: {evidence_exc}",
+                file=sys.stderr,
+            )
         print(f"F3N {args.cmd} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
