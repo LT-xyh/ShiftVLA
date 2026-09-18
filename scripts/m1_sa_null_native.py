@@ -613,6 +613,10 @@ def execute_f3n(
     prepared = nullcal.prepare_run(config_path=config_target)
     if prepared.run_spec.get("execution_commit") != qualification.get("execution_commit"):
         raise NativeQualificationError("prepared F3N schedule is not bound to the qualified execution commit")
+    if prepared.run_spec.get("config_file_sha256") != qualification.get("config_file_sha256"):
+        raise NativeQualificationError("prepared F3N schedule is not bound to the qualified config bytes")
+    if _sha256_file(config_target) != qualification.get("config_file_sha256"):
+        raise NativeQualificationError("F3N config bytes changed during schedule preparation")
     schedule_record = _copy_bytes_no_overwrite(
         Path(prepared.run_spec_path), compact_root / "null_schedule.json"
     )
