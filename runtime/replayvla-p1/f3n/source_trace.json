@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "phase": "F3N-static-source-trace",
+  "authority_commit": "3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8",
+  "status": "SOURCE_ACCOUNTED",
+  "production_path": [
+    {
+      "function": "scripts.m1_sa_null_native.construct_native_adapter",
+      "role": "Bind M1-SA-native environment variables/assets and call the existing policy-free factory",
+      "consumes": [
+        "task",
+        "obs_type",
+        "runtime.environment",
+        "assets",
+        "action_tape.sha256"
+      ],
+      "forbidden": [
+        "policy load",
+        "processor construction",
+        "checkpoint inference",
+        "replay capture/restore"
+      ]
+    },
+    {
+      "function": "scripts.dcu_preflight.build_cpu_environment_runtime",
+      "role": "Official policy-free LeRobot/LIBERO environment construction",
+      "consumes": [
+        "task.suite",
+        "task.task_id",
+        "task.init_state_id",
+        "obs_type",
+        "LIBERO_CONFIG_PATH"
+      ],
+      "installed_dependencies": [
+        "lerobot",
+        "libero",
+        "mujoco",
+        "robosuite"
+      ],
+      "source_checkout_requirement_for_third_party_installs": false,
+      "checkpoint_or_base_model_read": false,
+      "policy_module_import_audit": "fails if policy-bearing modules are introduced"
+    },
+    {
+      "function": "scripts.dcu_preflight._task_source_evidence",
+      "role": "Resolve frozen task BDDL/init-state through LIBERO_CONFIG_PATH",
+      "consumes": [
+        "current pinned external/hf-libero BDDL tree",
+        "current pinned external/hf-libero init_files tree"
+      ],
+      "checkpoint_or_policy_dependency": false
+    },
+    {
+      "function": "scripts.m1_state_replay.RuntimeAdapter.construct_fresh",
+      "role": "Perform exactly one seeded official construction reset and establish project-owned invariant adapter",
+      "consumes": [
+        "task.seed",
+        "task.init_state_id",
+        "runtime.controller_class",
+        "runtime.gripper_class",
+        "runtime.sleeping"
+      ],
+      "replay_operation": false
+    },
+    {
+      "function": "scripts.m1_null_calibration.execute_attempt",
+      "role": "Execute the persisted 82x7 float32 action tape and collect null evidence",
+      "consumes": [
+        "derived registry",
+        "action tape",
+        "terminal contract",
+        "invariant roots",
+        "renderer observation"
+      ],
+      "policy_calls": false,
+      "processor_calls": false,
+      "replay_capture_restore": false
+    }
+  ],
+  "legacy_state_replay_yaml_executable_parent": false,
+  "third_party_install_classification": "TRUSTED_DEPENDENCY",
+  "source_to_binary_provenance": "NOT_INDEPENDENTLY_ATTESTED",
+  "checkpoint_base_model_paths_required_on_f3n_path": false,
+  "notes": [
+    "The dcu_preflight module imports torch at module import time, so F3N records the pinned CPU torch installation even though no policy is loaded.",
+    "LIBERO task data remains byte-bound through the pinned hf-libero checkout and fixed BDDL/init-state hashes.",
+    "The ReplayVLA-P1 LIBERO config proven in F2 is reused by exact bytes; its datasets entry is retained but not a gate on the traced policy-free construction edge."
+  ]
+}
