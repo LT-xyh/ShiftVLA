@@ -1,193 +1,200 @@
 # ReplayVLA-P1 CURRENT EXECUTION
 
-Status: PREFIX-REEXECUTION G-P1 / G-P2 REPO-ONLY IMPLEMENTATION AUTHORIZED
+Status: PREFIX-REEXECUTION MICROVALIDATION AUTHORIZED EXACTLY ONCE
 Branch: xyh/replayvla-p1
 
 Latest authority:
-- docs/replayvla-p1/16_prefix_reexecution_paper_route.md
+- docs/replayvla-p1/17_prefix_reexecution_microvalidation_authorization.md
 
-Reviewed proposal commit:
-- afff8b3653fdda5314f301d2bdd4eb4e26517af0
+Reviewed implementation commit:
+- 3669a1b7c2bd05438b40351bc4cf7e066286a6f8
+
+Scientific route authority:
+- docs/replayvla-p1/16_prefix_reexecution_paper_route.md
 
 Historical exact-state route:
 - paused for Paper-1;
 - F3N/F3b/exact-state repair remain unauthorized.
 
-## Current scientific route
+## Current permission
 
-Paper-1 target:
+One non-scientific runtime microvalidation is authorized.
 
-**prefix reexecution / matched-history closed-loop persistence**
+The sequence is fixed:
 
-Central claim target:
+1. focused pytest;
+2. MV-P2-A same-current-state camera intervention;
+3. MV-P2-B switch-index lifecycle;
+4. MV-P1 one-query real DCU explicit-noise select_action;
+5. compact evidence;
+6. STOP.
 
-Matched fresh reexecution asks whether observation corruption leaves persistent behavioral
-aftereffects after corruption is removed, and whether accumulated corrupted history changes
-subsequent corruption susceptibility.
+The 40-rollout pilot is NOT authorized.
 
-This route does not claim exact physical-state branching.
+## Execution identity
 
-## Frozen pilot design
+Implementation under validation:
 
-- suite: libero_spatial
-- tasks: 0 and 4
-- init-state IDs: 0, 1, 2, 3
-- roots: 8
-- switch: t_switch = 50
-- corruption: clean vs agentview yaw +15 degrees
-- main arms: CC / CS / SC / SS
-- one clean duplicate per root
-- total planned pilot rollouts: 40
-- original horizon retained
-- no retry/replacement
+`3669a1b7c2bd05438b40351bc4cf7e066286a6f8`
 
-The pilot is NOT runtime-authorized yet.
+The branch may contain later docs-only authorization commits.
+Do not modify tracked implementation/config/tests before or during execution.
 
-## Frozen timing
+## Harness
 
-`obs_t -> policy -> action_t -> env.step(action_t) -> obs_{t+1}`
+Entry:
 
-For t_switch=50:
-- obs_0..obs_49 use prefix condition;
-- obs_50 onward use future condition;
-- action_49 is chosen from prefix obs_49;
-- camera future condition is installed before env.step(action_49) so returned obs_50 is future-condition;
-- action_50 is the first action chosen from future-condition obs_50.
+`scripts/p1_prefix_reexecution_microvalidate.py`
 
-No extra env.step or policy query is allowed.
+Compact evidence:
 
-## G-P1
+`runtime/replayvla-p1/prefix_reexecution_microvalidation.json`
 
-Implement narrow explicit-noise support through the existing remote select-action path.
+Recommended transient work directory:
 
-The final model call must remain:
+`runs/replayvla-p1/prefix_reexecution_microvalidation.work`
 
-`SmolVLAPolicy.select_action(batch, noise=explicit_noise)`
+The compact evidence path is no-overwrite and is absent from the reviewed repository state.
 
-Pinned LeRobot:
-`7e241bd630a3719a56157a497ce5d08f244784f1`
+## Start
 
-Preserve:
-- official select_action;
-- official queue semantics;
+~~~bash
+cd /public/home/xuyinghao/workspace/replayvla-p1
+
+GIT_SSH_COMMAND='ssh -F /dev/null -i /public/home/xuyinghao/.ssh/shiftvla_github -o IdentitiesOnly=yes' \
+git fetch origin
+
+git checkout xyh/replayvla-p1
+git merge --ff-only origin/xyh/replayvla-p1
+
+git rev-parse HEAD
+git status --short
+~~~
+
+Existing unrelated untracked `runs/replayvla-p1/` is allowed.
+
+If there are unexpected tracked modifications, STOP without reset/clean.
+
+Before invoking the harness, verify:
+
+~~~bash
+test ! -e runtime/replayvla-p1/prefix_reexecution_microvalidation.json
+test ! -e runs/replayvla-p1/prefix_reexecution_microvalidation.work
+~~~
+
+If either exists, STOP and do not delete it.
+
+## Execute exactly once
+
+Use the frozen CPU interpreter:
+
+~~~bash
+/public/home/xuyinghao/tmp/shiftvla-libero/bin/python -B \
+  -m scripts.p1_prefix_reexecution_microvalidate \
+  --baseline-config configs/m0/baseline_a.yaml \
+  --output runtime/replayvla-p1/prefix_reexecution_microvalidation.json \
+  --work-dir runs/replayvla-p1/prefix_reexecution_microvalidation.work \
+  --physical-device 1
+~~~
+
+Do not separately rerun focused pytest: the harness owns the gate and records it in the terminal evidence.
+
+Ordinary shell/cwd invocation mistakes may be corrected only if the harness has not created compact evidence.
+
+Once terminal compact evidence exists, do not rerun.
+
+## Fixed runtime gates
+
+Focused pytest must PASS before any real runtime stage.
+
+MV-P2-A must prove:
+- 360x360x3 uint8 agentview;
+- clean image SHA != shifted image SHA;
+- restored-clean SHA == clean SHA;
+- qpos/qvel/ctrl/sim time unchanged during camera-only mutation;
+- camera position/FOV unchanged;
+- clean quaternion exactly restored;
+- no policy/model query.
+
+MV-P2-B must use a fresh CPU env and:
+- arm CS;
+- t_switch 50;
+- one normal reset;
+- 50 wrapper dummy-action steps;
+- obs_0..obs_49 clean;
+- action_49 requests shifted camera for obs_50;
+- final evidence observation_index 50 / preceding_action_index 49 / shifted;
+- policy/model queries 0;
+- early terminal => BLOCKED.
+
+MV-P1 runs only after both P2 gates PASS and must:
+- use physical device 1;
+- create official real feature batch;
+- use paired explicit flow noise for task0/init0/seed2027/query0;
+- execute exactly one FeatureOnlyRemotePolicy.select_action(features, noise=noise);
+- reach official SmolVLAPolicy.select_action(batch, noise=noise);
+- queue before=0, after=0, new_chunk_generated=true;
 - n_action_steps=1;
-- official env/policy processors;
-- action generation from each branch's own observation.
+- no env.step.
 
-Do not replace this with manual predict_action_chunk selection.
+## Evidence handling
 
-Paired-noise key must exclude arm identity and bind root/query identity.
+Regardless of PASS/BLOCKED:
 
-## G-P2
+~~~bash
+git status --short
+git diff --check
+~~~
 
-Implement/source-account a narrow observation-indexed agentview-yaw controller.
+Do not stage transient work directory.
 
-Must prove with source trace + fake/unit tests:
-- obs_0 mode installed before reset returns;
-- obs_50 future mode installed before env.step(action_49);
-- no extra env.step;
-- no extra policy query;
-- no reset/horizon change;
-- no action/image copy;
-- branch-local observation rendering;
-- physics-relevant model/state identity unchanged by camera mutation.
+Stage only:
 
-If the pinned source/API does not support a narrow observation-only seam without invasive runtime
-machinery, stop and report G-P2 BLOCKED rather than building another infrastructure stack.
+`runtime/replayvla-p1/prefix_reexecution_microvalidation.json`
 
-## Same-prefix audit
+if it exists.
 
-Before the switch:
-- CC vs CS must match;
-- SC vs SS must match.
+Do not use `git add -A`.
 
-Audit at least:
-- noise hash;
-- observation/action query index;
-- requested/actual camera mode;
-- action;
-- terminal state.
+Commit a factual evidence-only message and push branch.
 
-Any unexplained same-prefix disagreement is technical failure.
+If the harness itself fails before compact evidence can be produced because of a filesystem-level condition,
+report it and do not manufacture evidence.
 
-## Repo-only implementation scope
-
-Authorized change classes:
-1. explicit-noise support on existing remote select_action transport;
-2. observation-indexed camera controller;
-3. thin four-arm schedule/evidence/orchestration layer;
-4. config/schema and fake/unit/static tests needed to prove G-P1/G-P2.
-
-Likely files may include:
-- scripts/dcu_model_worker.py
-- scripts/dcu_preflight.py
-- configs/replayvla/p1_prefix_reexecution_pilot.yaml
-- scripts/p1_prefix_reexecution.py
-- tests/test_p1_prefix_reexecution.py
-- focused existing worker/preflight tests if needed
-
-Keep changes minimal.
-
-Do not import or copy exact-state machinery.
-
-## Explicitly forbidden in this phase
-
-Do not run:
-- real LIBERO environment construction;
-- EGL discovery;
-- render;
-- env.step;
-- policy inference;
-- CPU/DCU real rollout;
-- camera runtime experiment;
-- pilot;
-- micro-validation;
-- Codex runtime execution.
+## Forbidden
 
 Do not:
-- repair F3N/F3b;
-- modify numbered authority 01-16;
-- modify historical evidence;
+- modify implementation/config/tests;
 - install/change packages;
-- create a second experimental runtime;
-- add broad contact/state instrumentation.
+- repair runtime;
+- retry the harness after terminal evidence;
+- run a second microvalidation;
+- run the 40-rollout pilot;
+- compute paper estimands;
+- run F3N/F3b/exact-state work;
+- git reset --hard;
+- git clean;
+- git add -A.
 
-## Required repo-only acceptance tests
+## Return to reviewer
 
-At minimum cover:
-- 4-arm schedule;
-- paired-noise key excludes arm;
-- matched key produces same noise bytes;
-- explicit noise transported through select_action;
-- worker calls official select_action with noise;
-- n_action_steps=1 queue semantics preserved in fakes;
-- no action copying;
-- obs[0:50] / obs[50:] branch conditions exactly match authority;
-- obs_0 camera condition before reset return;
-- obs_50 future condition before env.step(action_49);
-- no extra env.step/query at switch;
-- absorbing pre-switch terminal;
-- same-prefix audit failure is fail-closed;
-- no retry/replacement;
-- no import/dependency on m1_state_replay/F3N/F3b.
+Report:
+- execution branch HEAD before harness;
+- implementation commit under validation;
+- evidence commit SHA;
+- remote HEAD;
+- harness final PASS/BLOCKED;
+- focused pytest result;
+- MV-P2-A result and image SHA relations;
+- MV-P2-A physics invariance;
+- MV-P2-B result, reset count, wrapper step count, obs50 camera evidence, terminal-before-switch;
+- MV-P1 result;
+- worker/device identity;
+- explicit-noise presence;
+- queue before/after/new_chunk_generated;
+- policy/model query counts;
+- compact evidence path;
+- final git status.
 
-## After implementation
-
-Produce one minimal candidate commit.
-
-Do not advance to runtime automatically.
-
-Independent reviewer must inspect:
-- source-accounted camera API;
-- G-P1 semantics;
-- G-P2 timing;
-- test coverage;
-- scope.
-
-Only after that review may a tiny real micro-validation be considered.
-
-## Codex state
-
-Codex runtime work: NOT AUTHORIZED.
-
-Use Web Implementer for this repo-only implementation.
+Even on PASS: STOP.
+Pilot remains NOT AUTHORIZED.
