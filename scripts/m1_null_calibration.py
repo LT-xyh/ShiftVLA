@@ -467,6 +467,20 @@ def _resolve_path(value: str | Path, *, base: Path = _ROOT) -> Path:
     return target if target.is_absolute() else base / target
 
 
+def _repo_head() -> str:
+    try:
+        value = subprocess.check_output(
+            ["git", "-C", str(_ROOT), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception as exc:
+        raise ProvenanceError("repository HEAD is unavailable") from exc
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ProvenanceError("repository HEAD is not a full commit SHA")
+    return value
+
+
 _R1_NAMESPACE = {
     "policy_compute_device": "not_applicable_no_policy",
     "physical_compute_device_id": None,
@@ -949,6 +963,17 @@ def _validate_frozen_schedule(
         task = config.get("task")
         if bool(config.get("strict_runtime_contract")) and task != TASK:
             raise ProvenanceError("run specification task identity is not frozen")
+        if config.get("runtime_contract") == "m1_sa_native_v1":
+            if run_spec.get("runtime_contract") != "m1_sa_native_v1":
+                raise ProvenanceError("native run specification runtime contract is missing")
+            execution_commit = run_spec.get("execution_commit")
+            if not isinstance(execution_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", execution_commit):
+                raise ProvenanceError("native run specification execution commit is invalid")
+            if execution_commit != _repo_head():
+                raise ProvenanceError("native run specification execution commit drift")
+            frozen_identity = run_spec.get("runtime_identity_contract")
+            if not isinstance(frozen_identity, Mapping) or not frozen_identity:
+                raise ProvenanceError("native run specification runtime identity is missing")
 
 
 def _trace_record(registry: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -3077,7 +3102,12 @@ def _protocol_counters(adapter: Any, observed: Mapping[str, int], terminal_step:
     return values
 
 
-def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict[str, Any]:
+def _attempt_failure(
+    attempt: Mapping[str, Any],
+    error: Exception | str,
+    *,
+    failure_phase: str = "unknown",
+) -> dict[str, Any]:
     try:
         identity = _proc_start_identity(os.getpid())
     except Exception:
@@ -3101,6 +3131,7 @@ def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict
         "pair_id": attempt.get("pair_id"),
         "side": attempt.get("side"),
         "status": "failed",
+        "failure_phase": failure_phase,
         "error": f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error),
         "pid": os.getpid(),
         "ppid": os.getppid(),
@@ -3119,6 +3150,7 @@ def execute_attempt(
     adapter: Any = None
     result: dict[str, Any] | None = None
     actions: np.ndarray
+    failure_phase = "pre_construction"
     try:
         config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
         strict = bool(config.get("strict_runtime_contract"))
@@ -3145,6 +3177,7 @@ def execute_attempt(
             _strict_task(config.get("task"), field_name="task")
             _runtime_identity_audit(config)
         adapter = adapter_factory(config) if adapter_factory is not None else _construct_adapter(config)
+        failure_phase = "post_construction"
         windows = _window_map_from_registry(attempt)
         expected_terminal = attempt.get("terminal_contract")
         if expected_terminal is None and isinstance(config.get("terminal_contract"), Mapping):
@@ -3315,13 +3348,16 @@ def execute_attempt(
         if strict:
             expected_runtime = attempt.get("runtime_identity_contract")
             if isinstance(expected_runtime, Mapping):
-                expected_facts = expected_runtime.get("facts")
-                actual_facts = runtime_identity.get("facts")
-                if not _exact_equal(expected_facts, actual_facts):
-                    raise ProtocolError("worker runtime facts differ from frozen runtime contract")
+                for name, expected in expected_runtime.items():
+                    if name == "gl_identity":
+                        continue
+                    if name not in runtime_identity or not _exact_equal(runtime_identity[name], expected):
+                        raise ProtocolError(
+                            f"worker runtime identity {name} differs from frozen runtime contract"
+                        )
         result["output_sha256"] = payload_sha256(result)
     except Exception as exc:
-        result = _attempt_failure(attempt, exc)
+        result = _attempt_failure(attempt, exc, failure_phase=failure_phase)
     finally:
         close_evidence: dict[str, Any]
         if adapter is not None:
@@ -3357,7 +3393,11 @@ def execute_attempt(
                 "error": "adapter was not constructed",
             }
         if result is None:
-            result = _attempt_failure(attempt, "worker produced no attempt result")
+            result = _attempt_failure(
+                attempt,
+                "worker produced no attempt result",
+                failure_phase=failure_phase,
+            )
         result["close_evidence"] = close_evidence
         if not close_evidence["success"] and result.get("status") == "completed":
             result["status"] = "failed"
@@ -3558,6 +3598,14 @@ def _verify_worker_binding(
             raise ProvenanceError(f"worker schedule binding differs for {field_name}")
     if str(job.get("trace_id")) != str(run_spec.get("trace_id")):
         raise ProvenanceError("worker trace ID differs from the run specification")
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        if run_spec.get("execution_commit") != _repo_head():
+            raise ProvenanceError("worker execution commit differs from repository HEAD")
+        if not _exact_equal(
+            job.get("runtime_identity_contract"),
+            run_spec.get("runtime_identity_contract"),
+        ):
+            raise ProvenanceError("worker runtime identity contract differs from the run specification")
     if str(job.get("action_tape_sha256", "")).lower() != str(run_spec["action_tape"]["sha256"]).lower():
         raise ProvenanceError("worker action tape hash differs from the run specification")
     try:
@@ -3689,6 +3737,11 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
         }
         for index in range(PAIR_COUNT)
     ]
+    runtime_identity_contract = (
+        _runtime_identity_audit(config)
+        if config.get("runtime_contract") == "m1_sa_native_v1"
+        else {}
+    )
     run_spec_body = {
         "schema_version": SCHEMA_VERSION,
         "run_type": "m1_null_calibration",
@@ -3718,8 +3771,13 @@ def prepare_run(*, config_path: str | Path) -> PreparedRun:
         },
         "obs_type": config.get("obs_type"),
         "runtime_config": copy.deepcopy(runtime_config.get("runtime", {})),
+        "runtime_contract": config.get("runtime_contract"),
+        "runtime_identity_contract": copy.deepcopy(runtime_identity_contract),
         "state_replay_config": copy.deepcopy(config.get("state_replay_config")),
         "pair_registry_path": str(pair_registry_path),
+    }
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        run_spec_body["execution_commit"] = _repo_head()
     }
     run_spec = {**run_spec_body, "run_spec_sha256": sha256_bytes(canonical_json(run_spec_body).encode("utf-8"))}
     write_json_atomic(run_spec_path, run_spec)
@@ -3790,6 +3848,7 @@ def _finalize_process_result(
             failure = _attempt_failure(
                 request,
                 ProtocolError("completed worker result is missing output_sha256"),
+                failure_phase="unknown",
             )
             # Preserve the independently written result/log references.  Do
             # not retain the full trajectory in the parent failure record.
@@ -3815,7 +3874,11 @@ def _bind_worker_result(result: Mapping[str, Any], request: Mapping[str, Any]) -
         if result.get(name) is not None and result.get(name) != value
     ]
     if mismatches:
-        failure = _attempt_failure(request, ProtocolError("worker identity mismatch: " + "; ".join(mismatches)))
+        failure = _attempt_failure(
+            request,
+            ProtocolError("worker identity mismatch: " + "; ".join(mismatches)),
+            failure_phase="unknown",
+        )
         failure["worker_result"] = copy.deepcopy(dict(result))
         return failure
     bound = copy.deepcopy(dict(result))
@@ -3887,6 +3950,7 @@ def _default_process_runner(attempt: Mapping[str, Any]) -> dict[str, Any]:
         failure = _attempt_failure(
             attempt,
             ProtocolError(f"worker timed out after {timeout_seconds:g} seconds"),
+            failure_phase="unknown",
         )
         failure["worker_transport"] = transport
         return failure
@@ -3958,6 +4022,13 @@ def run_calibration(
     output_root = _resolve_path(prepared.run_spec["output_root"])
     strict = bool(config.get("strict_runtime_contract"))
     runtime_identity_contract = _runtime_identity_audit(config) if strict else {}
+    frozen_runtime_identity = prepared.run_spec.get("runtime_identity_contract")
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        if not isinstance(frozen_runtime_identity, Mapping) or not frozen_runtime_identity:
+            raise ProvenanceError("native run specification has no frozen runtime identity")
+        if not _exact_equal(runtime_identity_contract, frozen_runtime_identity):
+            raise ProvenanceError("parent runtime identity drifted after schedule preparation")
+        runtime_identity_contract = copy.deepcopy(dict(frozen_runtime_identity))
     expected_frozen_inputs = {
         "trace_id": prepared.run_spec["trace_id"],
         "task": copy.deepcopy(prepared.run_spec["task"]),
@@ -3987,7 +4058,7 @@ def run_calibration(
                 result = _bind_worker_result(_normalise_process_result(runner(request)), request)
                 result = _finalize_process_result(result, request, strict=strict)
             except Exception as exc:
-                result = _attempt_failure(request, exc)
+                result = _attempt_failure(request, exc, failure_phase="unknown")
                 result.update({"attempt_id": request["attempt_id"], "pair_id": pair_id, "side": side})
             artifact_path = _attempt_artifact_path(prepared, str(request["attempt_id"]))
             artifact_record = write_json_atomic(artifact_path, result)
@@ -4986,7 +5057,7 @@ def _worker_main(job_path: str | Path, result_path: str | Path | None = None) ->
         }
         result = execute_attempt(attempt)
     except Exception as exc:
-        result = _attempt_failure(job, exc)
+        result = _attempt_failure(job, exc, failure_phase="pre_construction")
     # The result file is the only machine-readable worker channel.  stdout is
     # intentionally a one-line frame so environment diagnostics cannot corrupt
     # the parent-side payload parser.
