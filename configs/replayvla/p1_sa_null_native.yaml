@@ -58,10 +58,12 @@ hashes:
 
 registry:
   path: runtime/replayvla-p1/f3a/m1_hard_gate_tape_registry.relocated.v2.json
+  hash_domain: registry_self_hash
   sha256: 2be994dc8915b53b9fb94b5a55fa5d95e13979ea21d6a5aba6112a1611f66608
 
 action_tape:
   path: runtime/m1/tapes/libero_spatial-task000-init000.actions.npy
+  hash_domain: float32_c_order_semantic_bytes
   sha256: c17bc44ad8195fecb42a80b3b272828761a9df6d88dd2bafe45db01a6cb04bbf
   shape: [82, 7]
   dtype: float32
