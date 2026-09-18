@@ -1,0 +1,29 @@
+schema_version: 1
+route: prefix_reexecution
+runtime_authorized: false
+
+suite: libero_spatial
+tasks: [0, 4]
+init_state_ids: [0, 1, 2, 3]
+switch_index: 50
+horizon: 280
+
+camera:
+  name: agentview
+  yaw_degrees: 15
+
+arms:
+  - CC
+  - CS
+  - SC
+  - SS
+
+clean_duplicate_per_root: 1
+retry: 0
+replacement: 0
+
+planned:
+  roots: 8
+  main_rollouts: 32
+  clean_duplicates: 8
+  total_rollouts: 40

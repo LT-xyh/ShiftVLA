@@ -42,9 +42,9 @@ from scripts.dcu_worker import (
 )
 
 
-# Keep the wire schemas separate even though their tensor specifications are
-# shared.  In particular, a queue-native select_action request must not carry
-# a caller-supplied flow noise tensor.
+# Keep the feature and noise wire schemas separate.  The historical
+# select_action path remains feature-only, while ReplayVLA-P1 may optionally
+# transport an explicit flow-noise bundle beside the same feature request.
 FEATURE_SCHEMA: dict[str, Any] = {
     key: value for key, value in REQUEST_SCHEMA.items() if key != "noise"
 }
@@ -810,8 +810,6 @@ class DCUModelWorker:
         request_path = message.get("request_path")
         features_path = message.get("features_path", message.get("feature_path"))
         noise_path = message.get("noise_path")
-        if command == "select_action" and noise_path is not None:
-            raise _error("select_action requires a feature-only request")
         if request_path is not None and not isinstance(request_path, str):
             raise _error("request_path must be a string")
         if features_path is not None and not isinstance(features_path, str):
@@ -824,28 +822,35 @@ class DCUModelWorker:
 
         if request_path is not None:
             if command == "select_action":
-                # Accept either shape long enough to give a precise contract
-                # error when a caller accidentally supplies the predict bundle.
-                features = load_tensor_bundle(
-                    request_path,
-                    schema={"__alternatives__": [SELECT_REQUEST_SCHEMA, PREDICT_REQUEST_SCHEMA]},
-                )
-                if "noise" in features:
-                    raise _error("select_action requires a feature-only request")
-            elif noise_path is None:
+                if noise_path is None:
+                    # Keep the historical feature-only path and retain a
+                    # precise error if noise is accidentally embedded in the
+                    # feature bundle instead of transported separately.
+                    features = load_tensor_bundle(
+                        request_path,
+                        schema={"__alternatives__": [SELECT_REQUEST_SCHEMA, PREDICT_REQUEST_SCHEMA]},
+                    )
+                    if "noise" in features:
+                        raise _error("select_action explicit noise must use noise_path")
+                    return features, {}
+                features = load_tensor_bundle(request_path, schema=SELECT_REQUEST_SCHEMA)
+                noise = load_tensor_bundle(noise_path, schema=NOISE_SCHEMA)
+                return features, noise
+            if noise_path is None:
                 features = load_tensor_bundle(request_path, schema=PREDICT_REQUEST_SCHEMA)
             else:
                 features = load_tensor_bundle(request_path, schema=SELECT_REQUEST_SCHEMA)
                 noise = load_tensor_bundle(noise_path, schema=NOISE_SCHEMA)
                 return features, noise
-            if command == "predict_action_chunk":
-                return ({key: value for key, value in features.items() if key != "noise"}, {"noise": features["noise"]})
-            return features, {}
+            return ({key: value for key, value in features.items() if key != "noise"}, {"noise": features["noise"]})
         if features_path is None:
             raise _error(f"{command} requires request_path or features_path")
         features = load_tensor_bundle(features_path, schema=SELECT_REQUEST_SCHEMA)
         if command == "select_action":
-            return features, {}
+            if noise_path is None:
+                return features, {}
+            noise = load_tensor_bundle(noise_path, schema=NOISE_SCHEMA)
+            return features, noise
         if noise_path is None:
             raise _error("predict_action_chunk requires explicit noise")
         noise = load_tensor_bundle(noise_path, schema=NOISE_SCHEMA)
@@ -899,9 +904,9 @@ class DCUModelWorker:
     def select_action(self, message: Mapping[str, Any], *, response_path: Path) -> dict[str, Any]:
         self._require_reset()
         features, noise_bundle = self._request_bundle(message, command="select_action")
-        if noise_bundle:
-            raise _error("select_action requires a feature-only request")
         batch = self._move(features)
+        noise = self._move(noise_bundle)["noise"] if noise_bundle else None
+        input_bundle = {**batch, **({"noise": noise} if noise is not None else {})}
         queue_before = _queue_length(self.policy)
         synchronize = getattr(self.device_adapter, "synchronize", None)
         reset_peak = getattr(self.device_adapter, "reset_peak_memory_stats", None)
@@ -913,9 +918,13 @@ class DCUModelWorker:
                 reset_peak()
             started = time.perf_counter()
             with torch.inference_mode():
-                # Do not pass a noise keyword: this preserves the official queue
-                # and native RNG behavior for closed-loop action selection.
-                result = self.policy.select_action(batch)
+                # Preserve the official select_action / queue path.  Explicit
+                # paired noise is optional; the historical no-noise call is
+                # kept byte-for-byte at the model API boundary.
+                if noise is None:
+                    result = self.policy.select_action(batch)
+                else:
+                    result = self.policy.select_action(batch, noise=noise)
             if callable(synchronize):
                 synchronize()
             _assert_no_forbidden_backends()
@@ -934,8 +943,8 @@ class DCUModelWorker:
             "response_path": str(response_path.resolve()),
             "action_shape": list(EXPECTED_ACTION_SHAPE),
             "output_dtype": str(result.dtype),
-            "input_dtypes": _tensor_dtypes(batch),
-            "dtypes": {"inputs": _tensor_dtypes(batch), "output": str(result.dtype)},
+            "input_dtypes": _tensor_dtypes(input_bundle),
+            "dtypes": {"inputs": _tensor_dtypes(input_bundle), "output": str(result.dtype)},
             "latency_seconds": float(latency),
             "peak_memory_bytes": peak_memory,
             "queue_length_before": queue_before,

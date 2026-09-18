@@ -627,10 +627,18 @@ class DCUWorkerClient:
         }
         return chunk
 
-    def select_action(self, request_path: str | Path) -> torch.Tensor:
+    def select_action(
+        self,
+        request_path: str | Path,
+        *,
+        noise_path: str | Path | None = None,
+    ) -> torch.Tensor:
         self._require_reset()
+        payload: dict[str, str] = {"request_path": str(request_path)}
+        if noise_path is not None:
+            payload["noise_path"] = str(noise_path)
         response = _require_response(
-            self.transport.request("select_action", request_path=str(request_path)),
+            self.transport.request("select_action", **payload),
             "select_action",
         )
         bundle = load_tensor_bundle(self._response_path(response, "select_action"), schema=RESPONSE_SCHEMA)

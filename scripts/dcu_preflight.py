@@ -1248,8 +1248,9 @@ class FeatureOnlyRemotePolicy(torch.nn.Module):
     The CPU process owns the simulator and all official preprocessing.  This
     wrapper filters the processor output down to the exact feature schema,
     writes it to the phase-local IPC directory, and asks the DCU client for
-    one queued action.  It intentionally has no model ``forward`` path and
-    rejects explicit noise for closed-loop calls.
+    one queued action.  It intentionally has no model ``forward`` path.
+    ReplayVLA-P1 may optionally supply explicit flow noise through a separate
+    tensor bundle while preserving the same select_action boundary.
     """
 
     def __init__(
@@ -1257,6 +1258,7 @@ class FeatureOnlyRemotePolicy(torch.nn.Module):
         client: Any,
         *,
         request_writer: Callable[[Mapping[str, torch.Tensor]], str | Path],
+        noise_writer: Callable[[Mapping[str, torch.Tensor]], str | Path] | None = None,
         trace: Any | None = None,
     ) -> None:
         super().__init__()
@@ -1266,6 +1268,7 @@ class FeatureOnlyRemotePolicy(torch.nn.Module):
             raise DCUPreflightError("request_writer must be callable")
         self.client = client
         self.request_writer = request_writer
+        self.noise_writer = noise_writer
         self.trace = trace
         self.last_queue_evidence: dict[str, Any] = {}
         self._remote_queue = _RemoteQueue()
@@ -1323,16 +1326,37 @@ class FeatureOnlyRemotePolicy(torch.nn.Module):
         self._remote_queue.length = int(after)
         return response
 
-    def select_action(self, features: Mapping[str, Any], *args: Any, **kwargs: Any) -> torch.Tensor:
-        del args
-        if kwargs:
-            raise DCUPreflightError("feature-only select_action does not accept extra arguments")
+    def select_action(
+        self,
+        features: Mapping[str, Any],
+        *args: Any,
+        noise: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        if args or kwargs:
+            raise DCUPreflightError("remote select_action accepts only the optional noise keyword")
         bundle = self._feature_bundle(features)
         request_path = Path(self.request_writer(bundle))
         if request_path.suffix != ".safetensors":
             raise DCUPreflightError("feature-only request must be a .safetensors path")
+        noise_path: Path | None = None
+        if noise is not None:
+            if self.noise_writer is None:
+                raise DCUPreflightError("explicit select_action noise requires noise_writer")
+            from scripts.dcu_model_worker import NOISE_SCHEMA
+            from scripts.dcu_worker import validate_tensor_bundle
+
+            noise_bundle = {"noise": noise}
+            validate_tensor_bundle(noise_bundle, schema=NOISE_SCHEMA)
+            noise_path = Path(self.noise_writer(noise_bundle))
+            if noise_path.suffix != ".safetensors":
+                raise DCUPreflightError("explicit noise request must be a .safetensors path")
         started = time.perf_counter()
-        select_call = lambda: self.client.select_action(request_path)
+        select_call = (
+            (lambda: self.client.select_action(request_path))
+            if noise_path is None
+            else (lambda: self.client.select_action(request_path, noise_path=noise_path))
+        )
         if self.forward_timeout_seconds is not None:
             result = _bounded_call(
                 select_call,
