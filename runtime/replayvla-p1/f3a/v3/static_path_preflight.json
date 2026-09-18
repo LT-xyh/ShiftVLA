@@ -1,0 +1,76 @@
+{
+  "missing_roles": [
+    "lerobot_checkout",
+    "robosuite_checkout",
+    "mujoco_checkout"
+  ],
+  "reason": "required pinned checkout/path binding unavailable",
+  "results": {
+    "action_tape": {
+      "exists": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/m1/tapes/libero_spatial-task000-init000.actions.npy",
+      "regular_non_symlink": true,
+      "sha256": "562b1ef31e26b79a533a7479050adbe9245b277e8285f694768ae736cccb2c2f"
+    },
+    "bddl": {
+      "exists": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl",
+      "regular_non_symlink": true,
+      "sha256": "9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b"
+    },
+    "derived_registry": {
+      "exists": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f3a/m1_hard_gate_tape_registry.relocated.v2.json",
+      "regular_non_symlink": true,
+      "sha256": "086e3a388d81b2f2581342350a61ab1a0d8c0eaae0a3279a3c547c26cb1b3667"
+    },
+    "init_state": {
+      "exists": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init",
+      "regular_non_symlink": true,
+      "sha256": "cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a"
+    },
+    "lerobot_checkout": {
+      "checkout_sha": null,
+      "exists": false,
+      "expected_sha": "7e241bd630a3719a56157a497ce5d08f244784f1",
+      "identity_match": false,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/lerobot"
+    },
+    "libero_checkout": {
+      "checkout_sha": "8561c60eea2fb93096146f240194649df73d8b1e",
+      "exists": true,
+      "expected_sha": "8561c60eea2fb93096146f240194649df73d8b1e",
+      "identity_match": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/hf-libero"
+    },
+    "mujoco_checkout": {
+      "checkout_sha": null,
+      "exists": false,
+      "expected_sha": "72cb2b210da666617924de709406d6aadbe60c71",
+      "identity_match": false,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/mujoco"
+    },
+    "recovery_manifest": {
+      "exists": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f3a/provenance_v2/recovery_manifest.json",
+      "regular_non_symlink": true,
+      "sha256": "199727291427d01b8c6b258322897dd47689f788572197488bfcfd53dd142b6b"
+    },
+    "robosuite_checkout": {
+      "checkout_sha": null,
+      "exists": false,
+      "expected_sha": "fbee5844ff5632f5b5698e204ec5357ca50be0df",
+      "identity_match": false,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/external/robosuite"
+    },
+    "runtime_lock": {
+      "exists": true,
+      "path": "/public/home/xuyinghao/workspace/replayvla-p1/runtime/locks/shiftvla-libero-runtime.txt",
+      "regular_non_symlink": true,
+      "sha256": "921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc"
+    }
+  },
+  "status": "BLOCKED",
+  "unresolved_historical_path_in_old_config": true
+}

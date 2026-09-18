@@ -1,0 +1,12 @@
+{
+  "phase": "F3a-RP",
+  "status": "BLOCKED",
+  "old_config": "configs/m1/state_replay.yaml",
+  "new_config": null,
+  "changed_pointers": [],
+  "semantic_equivalence": "NOT_REACHED",
+  "blocking_reason": "Required pinned external checkouts are unavailable or cannot be identity-verified in replayvla-p1: lerobot, robosuite, mujoco. Old config retains historical ShiftVLA absolute paths and cannot be treated as executable relocation.",
+  "dynamic_execution": false,
+  "f3a_v3_authorized": false,
+  "no_f3a_v4": true
+}

@@ -1,0 +1,14 @@
+{
+  "phase": "F3a-v3",
+  "status": "BLOCKED",
+  "reason": "F3a-RP static path preflight failed before v3 schedule freeze",
+  "completed_pairs": 0,
+  "completed_attempts": 0,
+  "technical_failures": 0,
+  "dynamic_execution_started": false,
+  "f3a_v4_authorized": false,
+  "contact_grasp_carried": "UNKNOWN",
+  "exact_discrete_invariants": "UNKNOWN",
+  "physics_envelopes": "UNKNOWN",
+  "rgb_envelopes": "UNKNOWN"
+}
