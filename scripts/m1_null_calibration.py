@@ -5050,6 +5050,9 @@ def _worker_main(job_path: str | Path, result_path: str | Path | None = None) ->
         # config/registry are transport hints only; canonical files remain
         # authoritative.
         config, registry, tape, run_spec, _pair_registry = _verify_worker_binding(job)
+    except Exception as exc:
+        result = _attempt_failure(job, exc, failure_phase="pre_construction")
+    else:
         trace_id = str(run_spec["trace_id"])
         attempt = {
             **job,
@@ -5060,9 +5063,13 @@ def _worker_main(job_path: str | Path, result_path: str | Path | None = None) ->
             "action_tape_sha256": run_spec["action_tape"]["sha256"],
             "terminal_contract": copy.deepcopy(run_spec.get("terminal_contract", {})),
         }
-        result = execute_attempt(attempt)
-    except Exception as exc:
-        result = _attempt_failure(job, exc, failure_phase="pre_construction")
+        try:
+            result = execute_attempt(attempt)
+        except Exception as exc:
+            # execute_attempt normally converts all trajectory/runtime errors
+            # into evidence itself. Any unexpected escape is conservatively
+            # unclassified rather than cohort-blocking.
+            result = _attempt_failure(attempt, exc, failure_phase="unknown")
     # The result file is the only machine-readable worker channel.  stdout is
     # intentionally a one-line frame so environment diagnostics cannot corrupt
     # the parent-side payload parser.
