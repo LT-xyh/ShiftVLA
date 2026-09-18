@@ -597,8 +597,12 @@ def _r1_merged_runtime_sha256(config: Mapping[str, Any]) -> str:
 
 
 def _official_runtime_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Resolve the complete frozen state-replay construction configuration."""
+    """Resolve the runtime construction configuration for the active contract."""
 
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        from scripts.m1_sa_null_native import native_runtime_config
+
+        return native_runtime_config(config)
     if not bool(config.get("strict_runtime_contract")):
         return dict(config)
     obs_type = config.get("obs_type")
@@ -721,6 +725,13 @@ def _validate_strict_null_config(config: Mapping[str, Any], runtime_config: Mapp
     """Validate the null-specific fields before any official construction."""
 
     if not bool(config.get("strict_runtime_contract")):
+        return
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        from scripts.m1_sa_null_native import validate_native_config
+
+        validate_native_config(config, runtime_config, check_files=True)
+        _strict_task(config.get("task"), field_name="task")
+        _terminal_contract_from_config(config)
         return
     _strict_task(config.get("task"), field_name="task")
     if config.get("obs_type") != runtime_config.get("obs_type"):
@@ -2611,6 +2622,10 @@ def _runtime_identity_audit(
 
     if not bool(config.get("strict_runtime_contract")):
         return dict(previous or {})
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        from scripts.m1_sa_null_native import runtime_identity_audit
+
+        return runtime_identity_audit(config, adapter=adapter, previous=previous)
     runtime_config = _official_runtime_config(config)
     paths = runtime_config.get("paths")
     if not isinstance(paths, Mapping):
@@ -3383,6 +3398,11 @@ def _window_map_from_registry(attempt: Mapping[str, Any]) -> list[dict[str, Any]
 
 def _construct_adapter(config: Mapping[str, Any]) -> Any:
     """Construct one official policy-free adapter at the worker boundary."""
+
+    if config.get("runtime_contract") == "m1_sa_native_v1":
+        from scripts.m1_sa_null_native import construct_native_adapter
+
+        return construct_native_adapter(config)
 
     from scripts import m1_state_replay
 
