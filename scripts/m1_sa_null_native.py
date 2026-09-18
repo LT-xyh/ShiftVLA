@@ -31,6 +31,10 @@ EXPECTED_ACTION_SHA256 = "c17bc44ad8195fecb42a80b3b272828761a9df6d88dd2bafe45db0
 EXPECTED_REGISTRY_SHA256 = "2be994dc8915b53b9fb94b5a55fa5d95e13979ea21d6a5aba6112a1611f66608"
 EXPECTED_LIBERO_CONFIG_SHA256 = "743d98647daf57c0cd4e3f54db3ca11f8c93ec326ff1627b606fc9960fab02ba"
 EXPECTED_LIBERO_SHA = "8561c60eea2fb93096146f240194649df73d8b1e"
+EXPECTED_ASSET_REPO_ID = "lerobot/libero-assets"
+EXPECTED_ASSET_REVISION = "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6"
+EXPECTED_ASSET_MANIFEST_PATH = "runtime/manifests/m0_preflight_b_artifacts.json"
+EXPECTED_ASSET_MANIFEST_SHA256 = "1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85"
 EXPECTED_GL = {
     "vendor": "Mesa/X.org",
     "renderer": "llvmpipe (LLVM 12.0.0, 256 bits)",
@@ -40,6 +44,12 @@ EXPECTED_GL = {
 
 class NativeQualificationError(RuntimeError):
     pass
+
+
+class AssetQualificationError(NativeQualificationError):
+    def __init__(self, message: str, evidence: Mapping[str, Any]):
+        super().__init__(message)
+        self.evidence = copy.deepcopy(dict(evidence))
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -145,8 +155,158 @@ def _config_without_dynamic_requirements(config: Mapping[str, Any]) -> None:
         raise NativeQualificationError("runtime LIBERO_CONFIG_PATH does not bind the F3N LIBERO config")
     if config.get("python") != "/public/home/xuyinghao/tmp/shiftvla-libero/bin/python":
         raise NativeQualificationError("CPU interpreter drift")
+    assets = _mapping(config.get("assets"), "assets")
+    if assets.get("repo_id") != EXPECTED_ASSET_REPO_ID:
+        raise NativeQualificationError("asset repo_id drift")
+    if assets.get("revision") != EXPECTED_ASSET_REVISION:
+        raise NativeQualificationError("asset revision drift")
+    manifest = _mapping(assets.get("manifest"), "assets.manifest")
+    if manifest.get("path") != EXPECTED_ASSET_MANIFEST_PATH:
+        raise NativeQualificationError("asset manifest path drift")
+    if str(manifest.get("sha256", "")).lower() != EXPECTED_ASSET_MANIFEST_SHA256:
+        raise NativeQualificationError("asset manifest SHA declaration drift")
     if "source_checkouts" in config:
         raise NativeQualificationError("F3N must not reintroduce legacy third-party source checkout gates")
+
+
+def _verify_asset_manifest(assets: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify the frozen LIBERO asset manifest and every declared asset byte."""
+
+    manifest_cfg = _mapping(assets.get("manifest"), "assets.manifest")
+    manifest_path = _resolve(manifest_cfg.get("path", "")).resolve()
+    declared_manifest_sha = str(manifest_cfg.get("sha256", "")).lower()
+    asset_root = Path(str(assets.get("path", ""))).resolve()
+    repo_id = str(assets.get("repo_id", ""))
+    revision = str(assets.get("revision", ""))
+    evidence: dict[str, Any] = {
+        "status": "BLOCKED",
+        "manifest": {
+            "path": str(manifest_path),
+            "sha256": None,
+            "expected_sha256": declared_manifest_sha,
+        },
+        "repo_id": repo_id,
+        "revision": revision,
+        "asset_root": str(asset_root),
+        "file_count": 0,
+        "total_bytes": 0,
+        "verified_file_count": 0,
+        "failures": [],
+    }
+    failures: list[str] = evidence["failures"]
+
+    try:
+        actual_manifest_sha = _sha256_file(manifest_path)
+    except Exception as exc:
+        failures.append(f"manifest unavailable: {type(exc).__name__}: {exc}")
+        raise AssetQualificationError("asset manifest qualification blocked", evidence) from exc
+    evidence["manifest"]["sha256"] = actual_manifest_sha
+    if actual_manifest_sha.lower() != declared_manifest_sha:
+        failures.append(
+            f"manifest SHA drift: {actual_manifest_sha} != {declared_manifest_sha}"
+        )
+        raise AssetQualificationError("asset manifest qualification blocked", evidence)
+
+    try:
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        failures.append(f"manifest parse failed: {type(exc).__name__}: {exc}")
+        raise AssetQualificationError("asset manifest qualification blocked", evidence) from exc
+    if not isinstance(manifest_payload, Mapping):
+        failures.append("manifest root is not a mapping")
+        raise AssetQualificationError("asset manifest qualification blocked", evidence)
+
+    raw_rows = manifest_payload.get("artifacts")
+    if not isinstance(raw_rows, list):
+        failures.append("manifest artifacts is not a list")
+        raise AssetQualificationError("asset manifest qualification blocked", evidence)
+    rows = [
+        row for row in raw_rows
+        if isinstance(row, Mapping) and str(row.get("repo_id", "")) == repo_id
+    ]
+    if len(rows) != 1:
+        failures.append(f"expected exactly one {repo_id!r} artifact row, found {len(rows)}")
+        raise AssetQualificationError("asset manifest qualification blocked", evidence)
+    row = rows[0]
+
+    if str(row.get("revision", "")) != revision:
+        failures.append(f"artifact revision drift: {row.get('revision')!r} != {revision!r}")
+    row_local_path = Path(str(row.get("local_path", ""))).resolve()
+    if row_local_path != asset_root:
+        failures.append(f"artifact local_path drift: {row_local_path} != {asset_root}")
+
+    raw_files = row.get("files")
+    required_filenames = row.get("required_filenames")
+    inventory = row.get("inventory")
+    if not isinstance(raw_files, list) or not raw_files:
+        failures.append("artifact row has no frozen files")
+        raw_files = []
+    if not isinstance(required_filenames, list):
+        failures.append("artifact row required_filenames is missing")
+        required_filenames = []
+    if not isinstance(inventory, Mapping):
+        failures.append("artifact row inventory is missing")
+        inventory = {}
+
+    file_rows: list[Mapping[str, Any]] = [
+        item for item in raw_files if isinstance(item, Mapping)
+    ]
+    if len(file_rows) != len(raw_files):
+        failures.append("artifact row contains malformed file entries")
+    paths = [str(item.get("path", "")) for item in file_rows]
+    if any(not path for path in paths) or len(paths) != len(set(paths)):
+        failures.append("artifact file paths are empty or duplicated")
+    if sorted(str(item) for item in required_filenames) != sorted(paths):
+        failures.append("artifact required_filenames does not equal the frozen file set")
+
+    declared_total = 0
+    valid_size_rows = True
+    for item in file_rows:
+        value = item.get("bytes")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            valid_size_rows = False
+            failures.append(f"invalid frozen size for {item.get('path')!r}: {value!r}")
+        else:
+            declared_total += int(value)
+    evidence["file_count"] = len(file_rows)
+    evidence["total_bytes"] = declared_total
+    if int(inventory.get("file_count", -1)) != len(file_rows):
+        failures.append("artifact inventory file_count differs from frozen files")
+    if int(inventory.get("total_bytes", -1)) != declared_total:
+        failures.append("artifact inventory total_bytes differs from frozen files")
+
+    verified = 0
+    if valid_size_rows:
+        for item in file_rows:
+            rel = Path(str(item["path"]))
+            expected_size = int(item["bytes"])
+            expected_sha = str(item.get("sha256", "")).lower()
+            if rel.is_absolute() or ".." in rel.parts:
+                failures.append(f"unsafe asset path: {rel}")
+                continue
+            target = asset_root / rel
+            if target.is_symlink() or not target.is_file():
+                failures.append(f"asset is missing, symlinked, or not regular: {rel}")
+                continue
+            actual_size = target.stat().st_size
+            if actual_size != expected_size:
+                failures.append(f"asset size drift: {rel}: {actual_size} != {expected_size}")
+                continue
+            try:
+                actual_sha = _sha256_file(target)
+            except Exception as exc:
+                failures.append(f"asset hash failed: {rel}: {type(exc).__name__}: {exc}")
+                continue
+            if len(expected_sha) != 64 or actual_sha.lower() != expected_sha:
+                failures.append(f"asset SHA drift: {rel}: {actual_sha} != {expected_sha}")
+                continue
+            verified += 1
+    evidence["verified_file_count"] = verified
+
+    if failures or verified != len(file_rows):
+        raise AssetQualificationError("asset manifest qualification blocked", evidence)
+    evidence["status"] = "PASS"
+    return evidence
 
 
 def validate_native_config(
@@ -207,10 +367,9 @@ def validate_native_config(
 
     assets = _mapping(config.get("assets"), "assets")
     asset_path = Path(str(assets["path"]))
-    if assets.get("revision") != "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6":
-        raise NativeQualificationError("asset revision drift")
     if not asset_path.is_dir():
         raise NativeQualificationError(f"LIBERO assets unavailable: {asset_path}")
+    asset_evidence = _verify_asset_manifest(assets)
 
     registry = _mapping(config.get("registry"), "registry")
     if str(registry.get("sha256")).lower() != EXPECTED_REGISTRY_SHA256:
@@ -244,6 +403,9 @@ def validate_native_config(
         value = parsed_libero_cfg.get(key)
         if not isinstance(value, str) or not Path(value).exists():
             raise NativeQualificationError(f"LIBERO config target unavailable: {key}={value!r}")
+    expected_benchmark_root = (ROOT / "external/hf-libero/libero/libero").resolve()
+    if Path(parsed_libero_cfg["benchmark_root"]).resolve() != expected_benchmark_root:
+        raise NativeQualificationError("LIBERO config benchmark_root drift")
     if Path(parsed_libero_cfg["bddl_files"]).resolve() != _resolve(bddl["path"]).parent.parent.resolve():
         # bddl_files is the suite root; compare against the checked-out root explicitly below.
         expected = (ROOT / "external/hf-libero/libero/libero/bddl_files").resolve()
@@ -266,7 +428,7 @@ def validate_native_config(
         "init_state": init_evidence,
         "registry_sha256": EXPECTED_REGISTRY_SHA256,
         "action_semantic_sha256": semantic_sha,
-        "assets": {"path": str(asset_path.resolve()), "revision": assets["revision"]},
+        "assets": asset_evidence,
         "recovery_manifest": {
             "path": str(recovery_path.resolve()),
             "sha256": _sha256_file(recovery_path),
@@ -405,6 +567,20 @@ def construct_native_adapter(config: Mapping[str, Any]) -> Any:
     import libero.libero as libero_package
 
     asset_path = Path(str(_mapping(config["assets"], "assets")["path"])).resolve()
+    expected_config_file = _resolve(_mapping(config["libero_config"], "libero_config")["path"]).resolve()
+    expected_config_dir = expected_config_file.parent
+    module_config_dir = getattr(libero_package, "libero_config_path", None)
+    module_config_file = getattr(libero_package, "config_file", None)
+    if module_config_dir is None or Path(str(module_config_dir)).resolve() != expected_config_dir:
+        raise NativeQualificationError(
+            f"installed LIBERO module-level config path is stale: "
+            f"{module_config_dir!r} != {str(expected_config_dir)!r}"
+        )
+    if module_config_file is None or Path(str(module_config_file)).resolve() != expected_config_file:
+        raise NativeQualificationError(
+            f"installed LIBERO module-level config file is stale: "
+            f"{module_config_file!r} != {str(expected_config_file)!r}"
+        )
     get_libero_path = getattr(libero_package, "get_libero_path", None)
     if not callable(get_libero_path):
         raise NativeQualificationError("installed LIBERO does not expose get_libero_path")
@@ -490,15 +666,16 @@ class FailFastProcessRunner:
         self.dynamic_launches += 1
         value = self.delegate(request)
         if isinstance(value, Mapping) and value.get("status") != "completed":
-            protocol = value.get("protocol")
-            construction_count = (
-                protocol.get("construction_reset_count")
-                if isinstance(protocol, Mapping)
-                else None
-            )
-            if construction_count in (0, None):
+            failure_stage = value.get("failure_stage")
+            if failure_stage != "POST_CONSTRUCTION":
+                # PRE_CONSTRUCTION blocks by authority. Missing/unknown stage
+                # also fails closed; it is never guessed to be post-construction.
                 self.blocked = True
-                self.block_reason = str(value.get("error", "pre-construction worker failure"))
+                stage_text = str(failure_stage or "UNKNOWN")
+                self.block_reason = (
+                    f"{stage_text}: "
+                    + str(value.get("error", "worker failure without classified stage"))
+                )
         return value
 
 
@@ -550,8 +727,13 @@ def execute_f3n(
     if (compact_root / "f3n_summary.json").exists():
         raise NativeQualificationError("F3N compact summary already exists; no rerun is authorized")
 
+    prepared = None
+    schedule_record = None
+    pair_registry_record = None
+    preparation_stage = "prepare_run"
     try:
         prepared = nullcal.prepare_run(config_path=config_target)
+        preparation_stage = "schedule_publication"
         schedule_record = _copy_bytes_no_overwrite(
             Path(prepared.run_spec_path), compact_root / "null_schedule.json"
         )
@@ -562,7 +744,7 @@ def execute_f3n(
         summary = {
             "phase": "F3N",
             "status": "BLOCKED",
-            "stage": "prepare_run",
+            "stage": preparation_stage,
             "reason": f"{type(exc).__name__}: {exc}",
             "completed_pairs": 0,
             "completed_attempts": 0,
@@ -574,6 +756,19 @@ def execute_f3n(
                 "static_qualification_sha256": _sha256_file(qualification_target),
                 "dynamic_worker_launches": 0,
                 "cohort_fail_fast_triggered": False,
+                "schedule_publication": {
+                    "runnable": False,
+                    "null_schedule": (
+                        {**schedule_record, "published": True}
+                        if isinstance(schedule_record, Mapping)
+                        else {"published": False}
+                    ),
+                    "pair_registry": (
+                        {**pair_registry_record, "published": True}
+                        if isinstance(pair_registry_record, Mapping)
+                        else {"published": False}
+                    ),
+                },
             },
         }
         _write_json_no_overwrite(compact_root / "f3n_summary.json", summary)
@@ -703,6 +898,8 @@ def main(argv: list[str] | None = None) -> int:
                 "legacy_state_replay_consulted": False,
                 "policy_or_processor_import_authorized": False,
             }
+            if isinstance(exc, AssetQualificationError):
+                blocked["asset_qualification"] = copy.deepcopy(exc.evidence)
             try:
                 _write_json_no_overwrite(_resolve(args.output), blocked)
             except Exception as publication_exc:

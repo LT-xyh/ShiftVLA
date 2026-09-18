@@ -35,8 +35,12 @@ libero_config:
   sha256: 743d98647daf57c0cd4e3f54db3ca11f8c93ec326ff1627b606fc9960fab02ba
 
 assets:
+  repo_id: lerobot/libero-assets
   revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
   path: /public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  manifest:
+    path: runtime/manifests/m0_preflight_b_artifacts.json
+    sha256: 1a94ebb8cc42614744d8dc9ebdad16f5461006f8806cc7d75869118013198a85
 
 input_bindings:
   bddl:

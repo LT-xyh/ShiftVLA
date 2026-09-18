@@ -3101,6 +3101,7 @@ def _attempt_failure(attempt: Mapping[str, Any], error: Exception | str) -> dict
         "pair_id": attempt.get("pair_id"),
         "side": attempt.get("side"),
         "status": "failed",
+        "failure_stage": "PRE_CONSTRUCTION",
         "error": f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error),
         "pid": os.getpid(),
         "ppid": os.getppid(),
@@ -3118,6 +3119,7 @@ def execute_attempt(
 
     adapter: Any = None
     result: dict[str, Any] | None = None
+    failure_stage = "PRE_CONSTRUCTION"
     actions: np.ndarray
     try:
         config = attempt.get("config") if isinstance(attempt.get("config"), Mapping) else {}
@@ -3145,6 +3147,7 @@ def execute_attempt(
             _strict_task(config.get("task"), field_name="task")
             _runtime_identity_audit(config)
         adapter = adapter_factory(config) if adapter_factory is not None else _construct_adapter(config)
+        failure_stage = "POST_CONSTRUCTION"
         windows = _window_map_from_registry(attempt)
         expected_terminal = attempt.get("terminal_contract")
         if expected_terminal is None and isinstance(config.get("terminal_contract"), Mapping):
@@ -3322,15 +3325,10 @@ def execute_attempt(
         result["output_sha256"] = payload_sha256(result)
     except Exception as exc:
         result = _attempt_failure(attempt, exc)
-        # A failure after construct_fresh() returned is trajectory/protocol
-        # level, not a pre-construction setup failure. Preserve that fact so
-        # the F3N cohort fail-fast wrapper does not cancel later attempts.
-        if adapter is not None:
-            protocol = result.get("protocol")
-            if isinstance(protocol, Mapping):
-                protocol = dict(protocol)
-                protocol["construction_reset_count"] = 1
-                result["protocol"] = protocol
+        # Failure-stage classification is orchestration metadata only.  Never
+        # rewrite construction_reset_count, reset provenance, or protocol
+        # counters to drive F3N cohort control.
+        result["failure_stage"] = failure_stage
     finally:
         close_evidence: dict[str, Any]
         if adapter is not None:
@@ -4544,6 +4542,7 @@ def _compact_attempt_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         "pair_id",
         "side",
         "status",
+        "failure_stage",
         "error",
         "pid",
         "ppid",
