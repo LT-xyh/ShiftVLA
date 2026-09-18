@@ -144,6 +144,74 @@ def test_fail_fast_does_not_stop_without_explicit_preconstruction_failure(failur
     assert runner.dynamic_launches == 1
 
 
+def test_execute_attempt_classifies_only_proven_preconstruction_failures():
+    from scripts import m1_null_calibration as nullcal
+
+    calls = []
+
+    def adapter_factory(config):
+        calls.append(config)
+        raise AssertionError("constructor must not be reached")
+
+    result = nullcal.execute_attempt(
+        {
+            "attempt_id": "wrong-id",
+            "pair_id": "m1n0-pair-000",
+            "side": "A",
+            "config": {},
+        },
+        adapter_factory=adapter_factory,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_phase"] == "pre_construction"
+    assert calls == []
+
+
+def test_execute_attempt_constructor_exception_is_not_false_preconstruction():
+    from scripts import m1_null_calibration as nullcal
+
+    def adapter_factory(config):
+        raise RuntimeError("constructor boundary failure")
+
+    result = nullcal.execute_attempt(
+        {
+            "attempt_id": "m1n0-pair-000-A",
+            "pair_id": "m1n0-pair-000",
+            "side": "A",
+            "config": {},
+            "tape": np.zeros((82, 7), dtype=np.float32),
+        },
+        adapter_factory=adapter_factory,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_phase"] == "unknown"
+
+
+def test_execute_attempt_failure_after_adapter_return_is_postconstruction():
+    from scripts import m1_null_calibration as nullcal
+
+    class Adapter:
+        def close(self):
+            return None
+
+    result = nullcal.execute_attempt(
+        {
+            "attempt_id": "m1n0-pair-000-A",
+            "pair_id": "m1n0-pair-000",
+            "side": "A",
+            "config": {},
+            "tape": np.zeros((82, 7), dtype=np.float32),
+        },
+        adapter_factory=lambda config: Adapter(),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_phase"] == "post_construction"
+    assert result["protocol"]["construction_reset_count"] == 1
+
+
 def test_runtime_contract_routes_to_native_without_legacy_parent(monkeypatch):
     from scripts import m1_null_calibration as nullcal
 
