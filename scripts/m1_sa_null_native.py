@@ -43,6 +43,10 @@ class NativeQualificationError(RuntimeError):
     pass
 
 
+class ExistingCompactEvidenceError(NativeQualificationError):
+    """A prior F3N compact artifact makes another cohort invocation unauthorized."""
+
+
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise NativeQualificationError(f"{name} must be a mapping")
@@ -605,7 +609,7 @@ def execute_f3n(
     )
     existing = [str(path) for path in compact_outputs if path.exists() or path.is_symlink()]
     if existing:
-        raise NativeQualificationError(
+        raise ExistingCompactEvidenceError(
             "F3N compact evidence already exists; no rerun/overwrite is authorized: "
             + ", ".join(existing)
         )
@@ -756,7 +760,11 @@ def main(argv: list[str] | None = None) -> int:
                     )
             else:
                 target = ROOT / "runtime/replayvla-p1/f3n/f3n_summary.json"
-                if not target.exists() and not target.is_symlink():
+                if (
+                    not isinstance(exc, ExistingCompactEvidenceError)
+                    and not target.exists()
+                    and not target.is_symlink()
+                ):
                     _write_json_no_overwrite(
                         target,
                         {
