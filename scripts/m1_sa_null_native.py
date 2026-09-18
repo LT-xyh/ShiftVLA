@@ -399,12 +399,20 @@ def construct_native_adapter(config: Mapping[str, Any]) -> Any:
     env = _mapping(runtime["environment"], "runtime.environment")
     os.environ.update({str(k): str(v) for k, v in env.items()})
 
-    # LIBERO caches assets independently of LIBERO_CONFIG_PATH. Bind the same
-    # fixed asset root used by the successful F2 worker before construction.
+    # LIBERO resolves assets through LIBERO_CONFIG_PATH/config.yaml. Verify
+    # that the imported package resolves the exact frozen asset root instead
+    # of mutating an undocumented private cache attribute.
     import libero.libero as libero_package
 
-    asset_path = str(_mapping(config["assets"], "assets")["path"])
-    libero_package._assets_path_cache = asset_path
+    asset_path = Path(str(_mapping(config["assets"], "assets")["path"])).resolve()
+    get_libero_path = getattr(libero_package, "get_libero_path", None)
+    if not callable(get_libero_path):
+        raise NativeQualificationError("installed LIBERO does not expose get_libero_path")
+    resolved_asset_path = Path(str(get_libero_path("assets"))).resolve()
+    if resolved_asset_path != asset_path:
+        raise NativeQualificationError(
+            f"LIBERO asset binding drift: {resolved_asset_path} != {asset_path}"
+        )
 
     from scripts.dcu_preflight import build_cpu_environment_runtime
     from scripts.m1_state_replay import RuntimeAdapter
@@ -542,13 +550,34 @@ def execute_f3n(
     if (compact_root / "f3n_summary.json").exists():
         raise NativeQualificationError("F3N compact summary already exists; no rerun is authorized")
 
-    prepared = nullcal.prepare_run(config_path=config_target)
-    schedule_record = _copy_bytes_no_overwrite(
-        Path(prepared.run_spec_path), compact_root / "null_schedule.json"
-    )
-    pair_registry_record = _copy_bytes_no_overwrite(
-        Path(prepared.pair_registry_path), compact_root / "pair_registry.json"
-    )
+    try:
+        prepared = nullcal.prepare_run(config_path=config_target)
+        schedule_record = _copy_bytes_no_overwrite(
+            Path(prepared.run_spec_path), compact_root / "null_schedule.json"
+        )
+        pair_registry_record = _copy_bytes_no_overwrite(
+            Path(prepared.pair_registry_path), compact_root / "pair_registry.json"
+        )
+    except Exception as exc:
+        summary = {
+            "phase": "F3N",
+            "status": "BLOCKED",
+            "stage": "prepare_run",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "completed_pairs": 0,
+            "completed_attempts": 0,
+            "technical_failures": 1,
+            "f3n": {
+                "authority_commit": AUTHORITY_COMMIT,
+                "execution_commit": _repo_head(),
+                "static_qualification_path": str(qualification_target),
+                "static_qualification_sha256": _sha256_file(qualification_target),
+                "dynamic_worker_launches": 0,
+                "cohort_fail_fast_triggered": False,
+            },
+        }
+        _write_json_no_overwrite(compact_root / "f3n_summary.json", summary)
+        return summary
 
     base_meta = {
         "authority_commit": AUTHORITY_COMMIT,
@@ -662,6 +691,26 @@ def main(argv: list[str] | None = None) -> int:
         }, sort_keys=True))
         return 0 if result.get("status") == "PASS" else 1
     except Exception as exc:
+        if args.cmd == "qualify":
+            blocked = {
+                "phase": "F3N-static",
+                "status": "BLOCKED",
+                "authority_commit": AUTHORITY_COMMIT,
+                "execution_commit": _repo_head(),
+                "config_path": str(_resolve(args.config).resolve()),
+                "stage": "static_qualification",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "legacy_state_replay_consulted": False,
+                "policy_or_processor_import_authorized": False,
+            }
+            try:
+                _write_json_no_overwrite(_resolve(args.output), blocked)
+            except Exception as publication_exc:
+                print(
+                    f"F3N qualify evidence publication failed: "
+                    f"{type(publication_exc).__name__}: {publication_exc}",
+                    file=sys.stderr,
+                )
         print(f"F3N {args.cmd} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 

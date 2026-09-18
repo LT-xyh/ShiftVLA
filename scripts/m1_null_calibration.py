@@ -3322,6 +3322,15 @@ def execute_attempt(
         result["output_sha256"] = payload_sha256(result)
     except Exception as exc:
         result = _attempt_failure(attempt, exc)
+        # A failure after construct_fresh() returned is trajectory/protocol
+        # level, not a pre-construction setup failure. Preserve that fact so
+        # the F3N cohort fail-fast wrapper does not cancel later attempts.
+        if adapter is not None:
+            protocol = result.get("protocol")
+            if isinstance(protocol, Mapping):
+                protocol = dict(protocol)
+                protocol["construction_reset_count"] = 1
+                result["protocol"] = protocol
     finally:
         close_evidence: dict[str, Any]
         if adapter is not None:

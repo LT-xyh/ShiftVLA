@@ -1,7 +1,10 @@
 import copy
 import json
 from pathlib import Path
+import sys
+import types
 
+import numpy as np
 import pytest
 
 from scripts import m1_sa_null_native as native
@@ -132,3 +135,132 @@ def test_runtime_contract_branch_is_wired_without_legacy_parent():
     assert config["runtime_contract"] == "m1_sa_native_v1"
     assert "state_replay_config" not in config
     assert callable(nullcal._construct_adapter)
+
+
+
+def test_nullcal_construct_adapter_routes_to_native_without_legacy_parent(monkeypatch):
+    from scripts import m1_null_calibration as nullcal
+
+    config = load_config()
+    seen = {}
+
+    def fake_construct(value):
+        seen["config"] = value
+        return object()
+
+    monkeypatch.setattr(native, "construct_native_adapter", fake_construct)
+    result = nullcal._construct_adapter(config)
+
+    assert result is not None
+    assert seen["config"]["runtime_contract"] == native.NATIVE_CONTRACT
+    assert "state_replay_config" not in seen["config"]
+
+
+def test_execute_attempt_marks_postconstruction_failure_as_constructed(monkeypatch):
+    from scripts import m1_null_calibration as nullcal
+
+    class FakeAdapter:
+        def step(self, _action):
+            raise RuntimeError("trajectory-level failure")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(nullcal, "_construct_adapter", lambda _config: FakeAdapter())
+    monkeypatch.setattr(nullcal, "_window_map_from_registry", lambda _attempt: [])
+
+    attempt = {
+        "attempt_id": "m1n0-pair-000-A",
+        "pair_id": "m1n0-pair-000",
+        "side": "A",
+        "config": {"strict_runtime_contract": False},
+        "tape": np.zeros((82, 7), dtype=np.float32),
+    }
+    result = nullcal.execute_attempt(attempt)
+
+    assert result["status"] == "failed"
+    assert result["protocol"]["construction_reset_count"] == 1
+    assert result["close_evidence"]["success"] is True
+
+
+def test_qualify_failure_publishes_compact_blocked_evidence(tmp_path, monkeypatch):
+    config_path = tmp_path / "native.yaml"
+    output_path = tmp_path / "static_qualification.json"
+    config_path.write_text("runtime_contract: m1_sa_native_v1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        native,
+        "static_qualify",
+        lambda _path: (_ for _ in ()).throw(native.NativeQualificationError("missing installed module")),
+    )
+    monkeypatch.setattr(native, "_repo_head", lambda: "a" * 40)
+
+    code = native.main([
+        "qualify",
+        "--config",
+        str(config_path),
+        "--output",
+        str(output_path),
+    ])
+
+    assert code == 2
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "BLOCKED"
+    assert payload["stage"] == "static_qualification"
+    assert payload["execution_commit"] == "a" * 40
+    assert payload["legacy_state_replay_consulted"] is False
+
+
+def test_construct_native_adapter_checks_libero_config_asset_binding(monkeypatch, tmp_path):
+    config = load_config()
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    config["assets"] = {"path": str(asset_root), "revision": config["assets"]["revision"]}
+
+    fake_core = types.ModuleType("libero.libero")
+    fake_core.get_libero_path = lambda key: str(asset_root) if key == "assets" else None
+    fake_pkg = types.ModuleType("libero")
+    fake_pkg.libero = fake_core
+    monkeypatch.setitem(sys.modules, "libero", fake_pkg)
+    monkeypatch.setitem(sys.modules, "libero.libero", fake_core)
+
+    monkeypatch.setattr(native, "validate_native_config", lambda *_args, **_kwargs: {"status": "PASS"})
+
+    fake_preflight = types.ModuleType("scripts.dcu_preflight")
+    runtime_bundle = {"env": object()}
+    fake_preflight.build_cpu_environment_runtime = lambda _config, phase="compare": runtime_bundle
+    monkeypatch.setitem(sys.modules, "scripts.dcu_preflight", fake_preflight)
+
+    fake_state = types.ModuleType("scripts.m1_state_replay")
+
+    class FakeRuntimeAdapter:
+        @classmethod
+        def construct_fresh(cls, _config, *, runtime_builder, tape_hash):
+            assert runtime_builder(_config) is runtime_bundle
+            return {"tape_hash": tape_hash}
+
+    fake_state.RuntimeAdapter = FakeRuntimeAdapter
+    monkeypatch.setitem(sys.modules, "scripts.m1_state_replay", fake_state)
+
+    result = native.construct_native_adapter(config)
+    assert result["tape_hash"] == config["action_tape"]["sha256"]
+
+
+def test_construct_native_adapter_rejects_asset_binding_drift(monkeypatch, tmp_path):
+    config = load_config()
+    expected = tmp_path / "expected-assets"
+    observed = tmp_path / "observed-assets"
+    expected.mkdir()
+    observed.mkdir()
+    config["assets"] = {"path": str(expected), "revision": config["assets"]["revision"]}
+
+    fake_core = types.ModuleType("libero.libero")
+    fake_core.get_libero_path = lambda _key: str(observed)
+    fake_pkg = types.ModuleType("libero")
+    fake_pkg.libero = fake_core
+    monkeypatch.setitem(sys.modules, "libero", fake_pkg)
+    monkeypatch.setitem(sys.modules, "libero.libero", fake_core)
+    monkeypatch.setattr(native, "validate_native_config", lambda *_args, **_kwargs: {"status": "PASS"})
+
+    with pytest.raises(native.NativeQualificationError, match="asset binding drift"):
+        native.construct_native_adapter(config)
