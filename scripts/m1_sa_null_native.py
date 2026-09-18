@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -437,22 +438,41 @@ def construct_native_adapter(config: Mapping[str, Any]) -> Any:
         raise
 
 
-def _write_json_no_overwrite(path: Path, value: Mapping[str, Any]) -> None:
+def _exclusive_bytes_no_overwrite(path: Path, payload: bytes) -> None:
     if path.exists() or path.is_symlink():
         raise NativeQualificationError(f"refusing to overwrite evidence: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
-    path.write_text(payload, encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise NativeQualificationError(f"refusing to overwrite evidence: {path}") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _write_json_no_overwrite(path: Path, value: Mapping[str, Any]) -> None:
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _exclusive_bytes_no_overwrite(path, payload)
 
 
 def _copy_bytes_no_overwrite(source: Path, target: Path) -> dict[str, Any]:
     if source.is_symlink() or not source.is_file():
         raise NativeQualificationError(f"source evidence is not a regular file: {source}")
-    if target.exists() or target.is_symlink():
-        raise NativeQualificationError(f"refusing to overwrite compact evidence: {target}")
     data = source.read_bytes()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    try:
+        _exclusive_bytes_no_overwrite(target, data)
+    except NativeQualificationError as exc:
+        raise NativeQualificationError(f"refusing to overwrite compact evidence: {target}") from exc
     digest = hashlib.sha256(data).hexdigest()
     return {"path": str(target), "sha256": digest, "size": len(data)}
 
