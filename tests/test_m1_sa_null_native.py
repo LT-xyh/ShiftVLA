@@ -201,6 +201,8 @@ def _install_fake_native_construction_modules(monkeypatch, *, wrap_error=None):
 
     fake_dcu.build_cpu_environment_runtime = build_cpu_environment_runtime
     monkeypatch.setitem(sys.modules, "scripts.dcu_preflight", fake_dcu)
+    import scripts as scripts_package
+    monkeypatch.setattr(scripts_package, "dcu_preflight", fake_dcu, raising=False)
 
     fake_state = types.ModuleType("scripts.m1_state_replay")
 
@@ -216,6 +218,7 @@ def _install_fake_native_construction_modules(monkeypatch, *, wrap_error=None):
 
     fake_state.RuntimeAdapter = FakeRuntimeAdapter
     monkeypatch.setitem(sys.modules, "scripts.m1_state_replay", fake_state)
+    monkeypatch.setattr(scripts_package, "m1_state_replay", fake_state, raising=False)
     return fake_libero_submodule, calls
 
 
