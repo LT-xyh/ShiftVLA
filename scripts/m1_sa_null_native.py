@@ -417,6 +417,16 @@ def construct_native_adapter(config: Mapping[str, Any]) -> Any:
     from scripts.m1_state_replay import RuntimeAdapter
 
     runtime_bundle = build_cpu_environment_runtime(config, phase="compare")
+    rebound_assets = getattr(libero_package, "_assets_path_cache", None)
+    if str(Path(str(rebound_assets)).resolve()) != str(Path(asset_path).resolve()):
+        close_envs = runtime_bundle.get("close_envs") if isinstance(runtime_bundle, Mapping) else None
+        envs = runtime_bundle.get("envs") if isinstance(runtime_bundle, Mapping) else None
+        if callable(close_envs) and envs is not None:
+            try:
+                close_envs(envs)
+            except Exception:
+                pass
+        raise NativeQualificationError("LIBERO assets cache drifted during native construction")
     tape_hash = str(_mapping(config["action_tape"], "action_tape")["sha256"])
     try:
         return RuntimeAdapter.construct_fresh(
