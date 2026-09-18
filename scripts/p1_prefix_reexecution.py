@@ -10,8 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+import numpy as np
 
 
 ARMS = ("CC", "CS", "SC", "SS")
@@ -26,27 +29,29 @@ FROZEN_TASKS = (0, 4)
 FROZEN_INIT_STATE_IDS = (0, 1, 2, 3)
 FROZEN_SWITCH_INDEX = 50
 FROZEN_HORIZON = 280
+FROZEN_ENVIRONMENT_SEED = 2027
 FROZEN_CAMERA_NAME = "agentview"
 FROZEN_YAW_DEGREES = 15
 FROZEN_FLOW_SHAPE = (1, 50, 32)
 DRAW_KIND = "flow"
 DRAW_SLOT = 0
 
-# Source-accounted gate status.  The pinned stack exposes an XML-construction
-# camera setter, while its supported CameraMover resets/rebuilds the environment.
-# With hard_reset=True, no narrow external hook was found between model rebuild
-# and reset-time camera observation generation.  Runtime camera mutation is
-# intentionally not implemented here.
+# Source-accounted G-P2 trace.  This is repo-only evidence, not an observed
+# LIBERO runtime qualification.
 G_P2_SOURCE_TRACE: dict[str, Any] = {
-    "status": "BLOCKED",
+    "status": "IMPLEMENTED_REPO_ONLY_NOT_RUNTIME_VALIDATED",
     "hf_lerobot_revision": "7e241bd630a3719a56157a497ce5d08f244784f1",
     "hf_libero_revision": "8561c60eea2fb93096146f240194649df73d8b1e",
     "robosuite_revision": "fbee5844ff5632f5b5698e204ec5357ca50be0df",
+    "runtime_mutation_api": "robosuite.utils.mjmod.CameraModder.set_quat",
+    "CameraMover": "REJECTED_XML_RESET_STATE_RESTORE_ROUTE",
+    "CameraModder": "SELECTED_RUNTIME_MODEL_CAMERA_ROUTE",
+    "DomainRandomizationWrapper": "SELECTED_LIFECYCLE_PRECEDENT",
     "agentview_construction": (
         "hf-LIBERO bddl_base_domain.py::_setup_camera -> "
         "mujoco_arena.set_camera(name='agentview', pos=..., quat=...)"
     ),
-    "agentview_model_fields": {
+    "agentview_clean_model_fields": {
         "name": "agentview",
         "position": [0.5886131746834771, 0.0, 1.4903500240372423],
         "quaternion_wxyz": [
@@ -57,35 +62,50 @@ G_P2_SOURCE_TRACE: dict[str, Any] = {
         ],
         "source_api": "robosuite.models.arenas.Arena.set_camera (XML/model construction)",
     },
-    "yaw_mapping": {
-        "status": "BLOCKED",
-        "reason": (
-            "no supported pinned runtime API was found that can apply +15 degree "
-            "agentview yaw after hard-reset model rebuild and before obs_0 rendering "
-            "without reset/XML rewrite/state restoration or deep internal monkeypatching"
-        ),
-    },
+    "camera_modder_source_account": (
+        "CameraModder.get_quat returns model.cam_quat[camid]; "
+        "CameraModder.set_quat writes only model.cam_quat[camid]"
+    ),
+    "yaw_definition": (
+        "world-frame +Z extrinsic yaw; R_shifted = R_yaw(+15deg) @ R_clean; "
+        "CameraModder boundary uses wxyz while robosuite transform_utils matrix helpers use xyzw"
+    ),
+    "lerobot_insertion": (
+        "lerobot.envs.libero.LiberoEnv owns self._env: OffScreenRenderEnv; "
+        "OffScreenRenderEnv -> ControlEnv -> self.env = robosuite task env -> sim"
+    ),
     "observation_path": (
         "robosuite RobotEnv._create_camera_sensors.camera_rgb -> "
         "sim.render(camera_name='agentview', ...)"
     ),
-    "reset_path": (
-        "LeRobot defaults hard_reset=True; robosuite MujocoEnv.reset rebuilds "
-        "model/sim, recreates camera observables, then returns "
-        "_get_observations(force_update=True)"
+    "reset_lifecycle_precedent": (
+        "DomainRandomizationWrapper.reset: underlying reset -> save defaults -> "
+        "modder.update_sim(current sim) -> camera mutation -> current-state _get_observations"
     ),
-    "step_observation_path": (
-        "robosuite MujocoEnv.step performs simulation updates, updates observables, "
-        "then returns _get_observations(); a valid obs_50 switch would therefore "
-        "have to be installed before env.step(action_49)"
+    "project_reset_lifecycle": (
+        "delegate LiberoEnv.reset (including init-state + settle dummy steps) exactly once -> "
+        "rebind CameraModder to current sim -> set requested agentview quaternion -> "
+        "force-refresh current-state observation -> return that as the only policy obs_0"
     ),
-    "runtime_mutation_api": None,
-    "physics_isolation_status": "UNPROVEN_BECAUSE_NO_AUTHORIZED_RUNTIME_CAMERA_MUTATION_SEAM",
-    "blocked_reason": (
-        "no narrow supported external API was found to install shifted agentview "
-        "after hard-reset model rebuild but before obs_0 rendering; CameraMover "
-        "rewrites XML and resets/restores the environment"
+    "step_lifecycle_precedent": (
+        "DomainRandomizationWrapper.step performs randomization update before delegated env.step(action)"
     ),
+    "project_step_lifecycle": (
+        "obs_t -> action_t -> apply camera request for obs_{t+1} -> "
+        "delegate env.step(action_t) -> obs_{t+1}; action_49 therefore switches before its one step"
+    ),
+    "settle_step_treatment": (
+        "LiberoEnv.reset internal num_steps_wait dummy steps occur before policy obs_0; "
+        "they are not policy queries, do not consume paired-noise indices, and do not count toward t_switch"
+    ),
+    "physics_isolation_evidence": {
+        "source_accounted": "set_quat writes model.cam_quat[camera_id] only",
+        "fake_unit": (
+            "sentinel qpos/qvel/ctrl/object/dynamics fields plus cam_pos/cam_fovy "
+            "are checked unchanged across clean/shifted/clean mutation"
+        ),
+        "real_runtime": "NOT_VALIDATED_NOT_AUTHORIZED",
+    },
 }
 
 
@@ -222,6 +242,225 @@ class PairedNoiseSelectActionPolicy:
         return getattr(self.delegate, name)
 
 
+def _load_robosuite_transform_utils() -> Any:
+    from robosuite.utils import transform_utils
+
+    return transform_utils
+
+
+def _camera_modder_for_sim(sim: Any) -> Any:
+    from robosuite.utils.mjmod import CameraModder
+
+    return CameraModder(
+        sim=sim,
+        camera_names=[FROZEN_CAMERA_NAME],
+        randomize_position=False,
+        randomize_rotation=True,
+        randomize_fovy=False,
+    )
+
+
+def derive_world_z_yaw_wxyz(
+    clean_quaternion_wxyz: Sequence[float],
+    *,
+    yaw_degrees: float = FROZEN_YAW_DEGREES,
+    transform_utils: Any | None = None,
+) -> np.ndarray:
+    """Compose a frozen world-frame +Z extrinsic yaw using robosuite conventions."""
+
+    if float(yaw_degrees) != float(FROZEN_YAW_DEGREES):
+        raise PrefixReexecutionConfigError("Paper-1 camera yaw must remain +15 degrees")
+    clean = np.asarray(clean_quaternion_wxyz, dtype=np.float64)
+    if clean.shape != (4,) or not np.isfinite(clean).all():
+        raise PrefixReexecutionConfigError("clean camera quaternion must be finite wxyz length 4")
+    norm = float(np.linalg.norm(clean))
+    if not np.isclose(norm, 1.0, atol=1e-6, rtol=0.0):
+        raise PrefixReexecutionConfigError("clean camera quaternion must be normalized")
+
+    transforms = transform_utils or _load_robosuite_transform_utils()
+    clean_xyzw = np.asarray(transforms.convert_quat(clean, to="xyzw"), dtype=np.float64)
+    clean_rotation = np.asarray(transforms.quat2mat(clean_xyzw), dtype=np.float64)
+    theta = math.radians(float(yaw_degrees))
+    yaw_rotation = np.asarray(
+        [
+            [math.cos(theta), -math.sin(theta), 0.0],
+            [math.sin(theta), math.cos(theta), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    shifted_rotation = yaw_rotation @ clean_rotation
+    shifted_xyzw = np.asarray(transforms.mat2quat(shifted_rotation), dtype=np.float64)
+    shifted_wxyz = np.asarray(transforms.convert_quat(shifted_xyzw, to="wxyz"), dtype=np.float64)
+    shifted_norm = float(np.linalg.norm(shifted_wxyz))
+    if shifted_norm <= 0.0 or not np.isfinite(shifted_norm):
+        raise PrefixReexecutionConfigError("derived shifted camera quaternion is invalid")
+    return shifted_wxyz / shifted_norm
+
+
+class AgentviewYawController:
+    """Thin deterministic agentview controller using only CameraModder.set_quat."""
+
+    def __init__(
+        self,
+        *,
+        camera_name: str = FROZEN_CAMERA_NAME,
+        yaw_degrees: float = FROZEN_YAW_DEGREES,
+        modder_factory: Callable[[Any], Any] = _camera_modder_for_sim,
+        transform_utils: Any | None = None,
+    ) -> None:
+        if camera_name != FROZEN_CAMERA_NAME:
+            raise PrefixReexecutionConfigError("only agentview is authorized")
+        if float(yaw_degrees) != float(FROZEN_YAW_DEGREES):
+            raise PrefixReexecutionConfigError("camera yaw must remain +15 degrees")
+        self.camera_name = camera_name
+        self.yaw_degrees = float(yaw_degrees)
+        self.modder_factory = modder_factory
+        self.transform_utils = transform_utils
+        self.modder: Any | None = None
+        self.sim: Any | None = None
+        self.clean_quaternion_wxyz: np.ndarray | None = None
+        self.shifted_quaternion_wxyz: np.ndarray | None = None
+        self.clean_position: np.ndarray | None = None
+        self.clean_fovy: float | None = None
+
+    def bind(self, sim: Any) -> dict[str, Any]:
+        if sim is None or getattr(sim, "model", None) is None:
+            raise PrefixReexecutionConfigError("camera controller requires a current sim/model")
+        if self.modder is None:
+            self.modder = self.modder_factory(sim)
+        else:
+            update_sim = getattr(self.modder, "update_sim", None)
+            if not callable(update_sim):
+                raise PrefixReexecutionConfigError("CameraModder seam must provide update_sim")
+            update_sim(sim)
+        self.sim = sim
+        clean_quat = np.asarray(self.modder.get_quat(self.camera_name), dtype=np.float64).copy()
+        clean_pos = np.asarray(self.modder.get_pos(self.camera_name), dtype=np.float64).copy()
+        clean_fovy = float(self.modder.get_fovy(self.camera_name))
+        self.clean_quaternion_wxyz = clean_quat
+        self.clean_position = clean_pos
+        self.clean_fovy = clean_fovy
+        self.shifted_quaternion_wxyz = derive_world_z_yaw_wxyz(
+            clean_quat,
+            yaw_degrees=self.yaw_degrees,
+            transform_utils=self.transform_utils,
+        )
+        return {
+            "camera_name": self.camera_name,
+            "clean_quaternion_wxyz": clean_quat.tolist(),
+            "shifted_quaternion_wxyz": self.shifted_quaternion_wxyz.tolist(),
+            "position": clean_pos.tolist(),
+            "fovy": clean_fovy,
+        }
+
+    def apply(self, mode: str, *, request: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        if self.modder is None or self.sim is None:
+            raise PrefixReexecutionConfigError("camera controller must be bound before apply")
+        if mode not in {"clean", "shifted"}:
+            raise PrefixReexecutionConfigError("camera mode must be clean or shifted")
+        assert self.clean_quaternion_wxyz is not None
+        assert self.shifted_quaternion_wxyz is not None
+        assert self.clean_position is not None
+        assert self.clean_fovy is not None
+
+        target = (
+            self.clean_quaternion_wxyz
+            if mode == "clean"
+            else self.shifted_quaternion_wxyz
+        )
+        self.modder.set_quat(self.camera_name, target.copy())
+        actual_quat = np.asarray(self.modder.get_quat(self.camera_name), dtype=np.float64).copy()
+        actual_pos = np.asarray(self.modder.get_pos(self.camera_name), dtype=np.float64).copy()
+        actual_fovy = float(self.modder.get_fovy(self.camera_name))
+        if not np.array_equal(actual_pos, self.clean_position):
+            raise PrefixReexecutionConfigError("camera position changed outside the authorized seam")
+        if actual_fovy != self.clean_fovy:
+            raise PrefixReexecutionConfigError("camera fovy changed outside the authorized seam")
+        if not np.allclose(actual_quat, target, atol=1e-7, rtol=0.0):
+            raise PrefixReexecutionConfigError("camera quaternion readback does not match requested mode")
+        return camera_evidence(
+            request
+            or {
+                "observation_index": -1,
+                "preceding_action_index": None,
+                "requested_camera_mode": mode,
+            },
+            actual_camera_parameters={
+                "camera_name": self.camera_name,
+                "quaternion_wxyz": actual_quat.tolist(),
+                "position": actual_pos.tolist(),
+                "fovy": actual_fovy,
+            },
+        )
+
+
+class ObservationIndexedCameraWrapper:
+    """Project-owned LeRobot/LIBERO integration seam with no state restore or extra step."""
+
+    def __init__(
+        self,
+        delegate: Any,
+        *,
+        arm: str,
+        controller: AgentviewYawController,
+        switch_index: int = FROZEN_SWITCH_INDEX,
+    ) -> None:
+        if arm not in ARMS:
+            raise PrefixReexecutionConfigError("camera wrapper requires a scientific arm")
+        if switch_index != FROZEN_SWITCH_INDEX:
+            raise PrefixReexecutionConfigError("switch_index must remain frozen at 50")
+        self.delegate = delegate
+        self.arm = arm
+        self.controller = controller
+        self.switch_index = switch_index
+        self.action_index = 0
+        self.camera_evidence_rows: list[dict[str, Any]] = []
+
+    def _current_robosuite_env(self) -> Any:
+        offscreen = getattr(self.delegate, "_env", None)
+        task_env = getattr(offscreen, "env", None)
+        if task_env is None or getattr(task_env, "sim", None) is None:
+            raise PrefixReexecutionConfigError(
+                "expected LeRobot LiberoEnv._env -> OffScreenRenderEnv.env -> robosuite task env"
+            )
+        return task_env
+
+    def _refresh_current_observation(self) -> Any:
+        task_env = self._current_robosuite_env()
+        get_observations = getattr(task_env, "_get_observations", None)
+        formatter = getattr(self.delegate, "_format_raw_obs", None)
+        if not callable(get_observations) or not callable(formatter):
+            raise PrefixReexecutionConfigError("narrow LIBERO observation refresh seam is unavailable")
+        raw_obs = get_observations(force_update=True)
+        return formatter(raw_obs)
+
+    def reset(self, *args: Any, **kwargs: Any) -> Any:
+        result = self.delegate.reset(*args, **kwargs)
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise PrefixReexecutionConfigError("LeRobot reset must return (observation, info)")
+        _, info = result
+        task_env = self._current_robosuite_env()
+        self.controller.bind(task_env.sim)
+        request = camera_request_for_initial_observation(self.arm)
+        evidence = self.controller.apply(request["requested_camera_mode"], request=request)
+        self.camera_evidence_rows = [evidence]
+        self.action_index = 0
+        observation = self._refresh_current_observation()
+        return observation, info
+
+    def step(self, action: Any) -> Any:
+        request = camera_request_before_step(self.arm, self.action_index)
+        evidence = self.controller.apply(request["requested_camera_mode"], request=request)
+        self.camera_evidence_rows.append(evidence)
+        result = self.delegate.step(action)
+        self.action_index += 1
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.delegate, name)
+
+
 def camera_mode_for_observation(
     arm: str,
     observation_index: int,
@@ -281,6 +520,7 @@ def validate_pilot_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "arms": list(ARMS),
         "clean_duplicate_per_root": 1,
         "horizon": FROZEN_HORIZON,
+        "environment_seed": FROZEN_ENVIRONMENT_SEED,
         "retry": 0,
         "replacement": 0,
         "runtime_authorized": False,
@@ -315,6 +555,7 @@ def build_pilot_schedule(config: Mapping[str, Any]) -> list[dict[str, Any]]:
                         "clean_duplicate": False,
                         "switch_index": FROZEN_SWITCH_INDEX,
                         "horizon": FROZEN_HORIZON,
+                        "environment_seed": FROZEN_ENVIRONMENT_SEED,
                         "retry": 0,
                         "replacement": 0,
                         "status": "PLANNED",
@@ -332,6 +573,7 @@ def build_pilot_schedule(config: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "clean_duplicate": True,
                     "switch_index": FROZEN_SWITCH_INDEX,
                     "horizon": FROZEN_HORIZON,
+                    "environment_seed": FROZEN_ENVIRONMENT_SEED,
                     "retry": 0,
                     "replacement": 0,
                     "status": "PLANNED",
