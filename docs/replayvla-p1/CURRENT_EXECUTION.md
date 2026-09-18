@@ -1,104 +1,193 @@
 # ReplayVLA-P1 CURRENT EXECUTION
 
-Status: EXACT-STATE PAPER-1 ROUTE PAUSED / PIVOTED
+Status: PREFIX-REEXECUTION G-P1 / G-P2 REPO-ONLY IMPLEMENTATION AUTHORIZED
 Branch: xyh/replayvla-p1
 
 Latest authority:
-- docs/replayvla-p1/15_f3n_route_level_pivot.md
+- docs/replayvla-p1/16_prefix_reexecution_paper_route.md
 
-Reviewed evidence commit:
-- 48f3d60f5fa4ba5c42e4ed886371b85cb5715833
+Reviewed proposal commit:
+- afff8b3653fdda5314f301d2bdd4eb4e26517af0
 
-## Final F3N state
+Historical exact-state route:
+- paused for Paper-1;
+- F3N/F3b/exact-state repair remain unauthorized.
 
-Historical original F3N static:
-- BLOCKED
-- preserved at runtime/replayvla-p1/f3n/static_qualification.json
-- reason: direct-file Python entrypoint could not resolve repository package
+## Current scientific route
 
-F3N-S1 static:
-- PASS
-- preserved at runtime/replayvla-p1/f3n/static_qualification_s1.json
-- installed dependencies qualified
-- frozen asset manifest PASS
-- 586/586 asset files verified
-- 422,320,936 asset bytes verified
+Paper-1 target:
 
-F3N dynamic:
-- BLOCKED PRE_CONSTRUCTION
-- renderer entry PASS
-- unique software EGL ordinal 8
-- planned: 20 pairs / 40 attempts
-- completed: 0 pairs / 0 attempts
-- dynamic worker launches: 1
-- retry: 0
-- replacement: 0
-- fail-fast: triggered
+**prefix reexecution / matched-history closed-loop persistence**
 
-Blocking path:
-`/public/home/xuyinghao/tmp/shiftvla-libero/lib/python3.12/site-packages/libero/libero/assets/scenes/libero_tabletop_base_style.xml`
+Central claim target:
 
-The historical CPU runtime lock records a package-local asset binding:
-`libero/libero/assets -> frozen assets root`.
+Matched fresh reexecution asks whether observation corruption leaves persistent behavioral
+aftereffects after corruption is removed, and whether accumulated corrupted history changes
+subsequent corruption susceptibility.
 
-F3N static verified the frozen external asset bytes but did not close this actual
-package-local consumption binding. The dynamic failure exposed that missing runtime
-binding before official environment construction returned.
+This route does not claim exact physical-state branching.
 
-## Adjudication
+## Frozen pilot design
 
-Do NOT repair the exact-state runtime for paper 1.
+- suite: libero_spatial
+- tasks: 0 and 4
+- init-state IDs: 0, 1, 2, 3
+- roots: 8
+- switch: t_switch = 50
+- corruption: clean vs agentview yaw +15 degrees
+- main arms: CC / CS / SC / SS
+- one clean duplicate per root
+- total planned pilot rollouts: 40
+- original horizon retained
+- no retry/replacement
 
-Do NOT:
-- create F3N-S2;
-- create another F3N dynamic cohort;
-- add/recreate a site-packages asset symlink for rerun;
-- modify installed packages;
-- return to F3a-v4/v5;
-- return to old G1/E3-E6;
-- run physical replay/F3b;
-- run policy replay on the exact-state route.
+The pilot is NOT runtime-authorized yet.
 
-The exact-state infrastructure route is paused for the first-paper objective.
+## Frozen timing
 
-This is not a scientific falsification of ReplayVLA.
-It is an engineering-budget stop after the direct runtime failed before the first
-complete null trajectory.
+`obs_t -> policy -> action_t -> env.step(action_t) -> obs_{t+1}`
 
-## Next authorized work
+For t_switch=50:
+- obs_0..obs_49 use prefix condition;
+- obs_50 onward use future condition;
+- action_49 is chosen from prefix obs_49;
+- camera future condition is installed before env.step(action_49) so returned obs_50 is future-condition;
+- action_50 is the first action chosen from future-condition obs_50.
 
-Repo-only work only.
+No extra env.step or policy query is allowed.
 
-Design a new paper route that preserves the scientific question while removing the
-exact simulator restore dependency.
+## G-P1
 
-Preferred target:
+Implement narrow explicit-noise support through the existing remote select-action path.
 
-**prefix reexecution / matched-history failure decomposition**
+The final model call must remain:
 
-High-level target:
-- forward execute from the same frozen initial condition;
-- produce clean and shifted prefixes by ordinary execution;
-- at frozen switch indices, vary only future observation condition;
-- construct CC / CS / SC / SS through matched forward reexecution where feasible;
-- interpret differences as future-observation effect and accumulated closed-loop
-  history burden;
-- do not claim exact physical-state branching or exact restore equivalence.
+`SmolVLAPolicy.select_action(batch, noise=explicit_noise)`
 
-Before any new runtime experiment:
-1. write a new scientific/design authority;
-2. define branch construction semantics;
-3. define paired RNG/noise policy;
-4. define switch indices and task split;
-5. define success/failure and trajectory-level metrics;
-6. define minimum pilot needed to validate the hypothesis;
-7. independent reviewer approval.
+Pinned LeRobot:
+`7e241bd630a3719a56157a497ce5d08f244784f1`
+
+Preserve:
+- official select_action;
+- official queue semantics;
+- n_action_steps=1;
+- official env/policy processors;
+- action generation from each branch's own observation.
+
+Do not replace this with manual predict_action_chunk selection.
+
+Paired-noise key must exclude arm identity and bind root/query identity.
+
+## G-P2
+
+Implement/source-account a narrow observation-indexed agentview-yaw controller.
+
+Must prove with source trace + fake/unit tests:
+- obs_0 mode installed before reset returns;
+- obs_50 future mode installed before env.step(action_49);
+- no extra env.step;
+- no extra policy query;
+- no reset/horizon change;
+- no action/image copy;
+- branch-local observation rendering;
+- physics-relevant model/state identity unchanged by camera mutation.
+
+If the pinned source/API does not support a narrow observation-only seam without invasive runtime
+machinery, stop and report G-P2 BLOCKED rather than building another infrastructure stack.
+
+## Same-prefix audit
+
+Before the switch:
+- CC vs CS must match;
+- SC vs SS must match.
+
+Audit at least:
+- noise hash;
+- observation/action query index;
+- requested/actual camera mode;
+- action;
+- terminal state.
+
+Any unexplained same-prefix disagreement is technical failure.
+
+## Repo-only implementation scope
+
+Authorized change classes:
+1. explicit-noise support on existing remote select_action transport;
+2. observation-indexed camera controller;
+3. thin four-arm schedule/evidence/orchestration layer;
+4. config/schema and fake/unit/static tests needed to prove G-P1/G-P2.
+
+Likely files may include:
+- scripts/dcu_model_worker.py
+- scripts/dcu_preflight.py
+- configs/replayvla/p1_prefix_reexecution_pilot.yaml
+- scripts/p1_prefix_reexecution.py
+- tests/test_p1_prefix_reexecution.py
+- focused existing worker/preflight tests if needed
+
+Keep changes minimal.
+
+Do not import or copy exact-state machinery.
+
+## Explicitly forbidden in this phase
+
+Do not run:
+- real LIBERO environment construction;
+- EGL discovery;
+- render;
+- env.step;
+- policy inference;
+- CPU/DCU real rollout;
+- camera runtime experiment;
+- pilot;
+- micro-validation;
+- Codex runtime execution.
+
+Do not:
+- repair F3N/F3b;
+- modify numbered authority 01-16;
+- modify historical evidence;
+- install/change packages;
+- create a second experimental runtime;
+- add broad contact/state instrumentation.
+
+## Required repo-only acceptance tests
+
+At minimum cover:
+- 4-arm schedule;
+- paired-noise key excludes arm;
+- matched key produces same noise bytes;
+- explicit noise transported through select_action;
+- worker calls official select_action with noise;
+- n_action_steps=1 queue semantics preserved in fakes;
+- no action copying;
+- obs[0:50] / obs[50:] branch conditions exactly match authority;
+- obs_0 camera condition before reset return;
+- obs_50 future condition before env.step(action_49);
+- no extra env.step/query at switch;
+- absorbing pre-switch terminal;
+- same-prefix audit failure is fail-closed;
+- no retry/replacement;
+- no import/dependency on m1_state_replay/F3N/F3b.
+
+## After implementation
+
+Produce one minimal candidate commit.
+
+Do not advance to runtime automatically.
+
+Independent reviewer must inspect:
+- source-accounted camera API;
+- G-P1 semantics;
+- G-P2 timing;
+- test coverage;
+- scope.
+
+Only after that review may a tiny real micro-validation be considered.
 
 ## Codex state
 
-No Codex runtime work is currently authorized.
+Codex runtime work: NOT AUTHORIZED.
 
-Do not spend Codex quota on exact-state infrastructure repair.
-
-Next work should be performed by Web Implementer + Reviewer until the pivoted route is
-execution-ready.
+Use Web Implementer for this repo-only implementation.
