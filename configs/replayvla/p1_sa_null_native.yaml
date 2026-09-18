@@ -1,0 +1,157 @@
+schema_version: 1
+name: replayvla_p1_f3n_native_null
+runtime_contract: m1_sa_native_v1
+strict_runtime_contract: true
+strict_provenance: true
+authoritative: true
+authority_commit: 3902dea1879a4bdf3fbb1f76ad60aa46295e8ed8
+execution_commit_mode: current_head_at_qualification
+
+pair_count: 20
+pair_prefix: m1n0-pair-
+worker_timeout_seconds: 600
+output_root: runs/replayvla-p1/f3n-20260918
+
+task:
+  suite: libero_spatial
+  task_id: 0
+  init_state_id: 0
+  seed: 2027
+trajectory_id: libero_spatial-task000-init000
+init_state_id_evidence: 0
+obs_type: pixels_agent_pos
+python: /public/home/xuyinghao/tmp/shiftvla-libero/bin/python
+
+runtime_lock:
+  path: runtime/locks/shiftvla-libero-runtime.txt
+  sha256: 921ad0d14240e56cbd9297db152f90e167a8d85e690d2010aca6a31348e6a0fc
+
+libero_checkout:
+  path: external/hf-libero
+  git_sha: 8561c60eea2fb93096146f240194649df73d8b1e
+
+libero_config:
+  path: runtime/replayvla-p1/f2_libero_config/config.yaml
+  sha256: 743d98647daf57c0cd4e3f54db3ca11f8c93ec326ff1627b606fc9960fab02ba
+
+assets:
+  revision: 0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+  path: /public/home/xuyinghao/workspace/vla/external/artifacts/libero-assets/0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+
+input_bindings:
+  bddl:
+    path: external/hf-libero/libero/libero/bddl_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.bddl
+    sha256: 9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b
+  init_state:
+    path: external/hf-libero/libero/libero/init_files/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate.pruned_init
+    sha256: cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a
+  recovery_manifest:
+    path: runtime/replayvla-p1/f3a/provenance_v2/recovery_manifest.json
+
+registry:
+  path: runtime/replayvla-p1/f3a/m1_hard_gate_tape_registry.relocated.v2.json
+  sha256: 2be994dc8915b53b9fb94b5a55fa5d95e13979ea21d6a5aba6112a1611f66608
+
+action_tape:
+  path: runtime/m1/tapes/libero_spatial-task000-init000.actions.npy
+  sha256: c17bc44ad8195fecb42a80b3b272828761a9df6d88dd2bafe45db01a6cb04bbf
+  shape: [82, 7]
+  dtype: float32
+
+trusted_dependencies:
+  numpy: {distribution: numpy, module: numpy, version: "2.2.6"}
+  torch: {distribution: torch, module: torch, version: "2.11.0+cpu"}
+  mujoco: {distribution: mujoco, module: mujoco, version: "3.7.0"}
+  robosuite: {distribution: robosuite, module: robosuite, version: "1.4.0"}
+  lerobot: {distribution: lerobot, module: lerobot, version: "0.6.1"}
+  libero: {distribution: hf-libero, module: libero, version: "0.1.4"}
+  pyopengl: {distribution: PyOpenGL, module: OpenGL, version: "3.1.10"}
+
+runtime:
+  offline: true
+  local_only: true
+  include_policy: false
+  call_policy: false
+  call_processors: false
+  use_async_envs: false
+  n_envs: 1
+  controller_class: OperationalSpaceController
+  gripper_class: PandaGripper
+  sleeping: false
+  retry_count: 0
+  fresh_processes: true
+  environment:
+    LIBERO_CONFIG_PATH: /public/home/xuyinghao/workspace/replayvla-p1/runtime/replayvla-p1/f2_libero_config
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+  renderer:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    MUJOCO_EGL_DEVICE_ID: "8"
+    expected_gl:
+      vendor: Mesa/X.org
+      renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+      version: 3.1 Mesa 21.1.5
+
+renderer:
+  camera: agentview
+  observation_key: render_rgb
+  expected_ordinal: 8
+
+quantity_selection:
+  root_patterns:
+    - integration
+    - qpos
+    - qvel
+    - controller
+    - eef_pose
+    - gripper
+    - gripper_physical
+    - objects
+    - contacts
+
+invariants:
+  required_roots:
+    - integration
+    - qpos
+    - qvel
+    - controller
+    - eef_pose
+    - gripper
+    - gripper_physical
+    - objects
+    - body_xpos
+    - body_xquat
+    - contacts
+    - predicates
+    - success
+    - counters
+    - observables
+    - observable_cache
+
+terminal_contract:
+  step: 82
+  termination_reason: predicate_transition
+  success: true
+  terminated: true
+  truncated: false
+
+publication:
+  atomic: true
+  no_overwrite: true
+  safe_no_pickle: true
+
+governance:
+  legacy_state_replay_config_not_executable: true
+  f2_strict_admission: FAIL_NONCONFORMANT
+  f3a_v1: BLOCKED
+  f3a_v2: BLOCKED
+  f3a_v3: BLOCKED
+  no_f3a_v4: true
+  no_second_f3n_runtime: true
