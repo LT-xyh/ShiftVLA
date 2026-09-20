@@ -2145,8 +2145,19 @@ def _egl_probe_evidence(*, selected_device: str = EXPECTED_EGL_DEVICE_ID) -> dic
     }
 
 
-def _task_source_evidence(libero: Any, task: Mapping[str, Any], root: Path) -> dict[str, Any]:
-    """Resolve and validate the same pinned task/BDDL/init seams as M0."""
+def _task_source_evidence(
+    libero: Any,
+    task: Mapping[str, Any],
+    root: Path,
+    *,
+    content_pins: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve runtime-consumed task sources.
+
+    Historical callers keep the repo-relative hf-libero ancestry guard.
+    Prefix-reexecution microvalidation may opt into exact consumed-file
+    content admission with explicit frozen task/source hashes.
+    """
 
     try:
         from libero.libero import benchmark, get_libero_path
@@ -2164,12 +2175,63 @@ def _task_source_evidence(libero: Any, task: Mapping[str, Any], root: Path) -> d
     try:
         bddl_resolved = bddl.resolve(strict=True)
         init_resolved = init_state.resolve(strict=True)
-        bddl_resolved.relative_to(expected_bddl_root.resolve())
-        init_resolved.relative_to(expected_init_root.resolve())
-    except ValueError as exc:
-        raise DCUPreflightError("LIBERO BDDL/init state escaped pinned hf-libero tree") from exc
     except FileNotFoundError as exc:
         raise DCUPreflightError("LIBERO BDDL/init state is not a regular file") from exc
+
+    source_check = "pinned_hf_libero_paths"
+    content_identity: dict[str, Any] = {}
+    if content_pins is None:
+        try:
+            bddl_resolved.relative_to(expected_bddl_root.resolve())
+            init_resolved.relative_to(expected_init_root.resolve())
+        except ValueError as exc:
+            raise DCUPreflightError("LIBERO BDDL/init state escaped pinned hf-libero tree") from exc
+    else:
+        pins = _require_mapping(content_pins, "task_source_content_pins")
+        expected_identity = {
+            "suite": str(task["suite"]),
+            "task_id": int(task["task_id"]),
+            "init_state_id": int(task["init_state_id"]),
+        }
+        for key, actual in expected_identity.items():
+            pinned = pins.get(key)
+            if pinned != actual:
+                raise DCUPreflightError(
+                    f"task_source_content_pins.{key} must equal runtime task identity {actual!r}, got {pinned!r}"
+                )
+        expected_bddl_sha = _require_sha256(
+            pins.get("bddl_sha256"), "task_source_content_pins.bddl_sha256"
+        )
+        expected_init_sha = _require_sha256(
+            pins.get("init_state_sha256"), "task_source_content_pins.init_state_sha256"
+        )
+        for label, resolved in (("BDDL", bddl_resolved), ("init state", init_resolved)):
+            if not resolved.is_file() or not os.access(resolved, os.R_OK):
+                raise DCUPreflightError(
+                    f"runtime-resolved LIBERO {label} is not a readable regular file"
+                )
+        actual_bddl_sha = _sha256_file(bddl_resolved)
+        actual_init_sha = _sha256_file(init_resolved)
+        if actual_bddl_sha != expected_bddl_sha:
+            raise DCUPreflightError(
+                f"runtime-consumed LIBERO BDDL sha256 mismatch: expected {expected_bddl_sha}, got {actual_bddl_sha}"
+            )
+        if actual_init_sha != expected_init_sha:
+            raise DCUPreflightError(
+                f"runtime-consumed LIBERO init-state sha256 mismatch: expected {expected_init_sha}, got {actual_init_sha}"
+            )
+        source_check = "runtime_consumed_content_sha256"
+        content_identity = {
+            "bddl_sha256": actual_bddl_sha,
+            "init_state_sha256": actual_init_sha,
+            "content_pins": {
+                "suite": expected_identity["suite"],
+                "task_id": expected_identity["task_id"],
+                "init_state_id": expected_identity["init_state_id"],
+                "bddl_sha256": expected_bddl_sha,
+                "init_state_sha256": expected_init_sha,
+            },
+        }
     description = getattr(task_spec, "language", getattr(task_spec, "description", None))
     if not isinstance(description, str) or not description.strip():
         raise DCUPreflightError("LIBERO task description is missing")
@@ -2188,7 +2250,8 @@ def _task_source_evidence(libero: Any, task: Mapping[str, Any], root: Path) -> d
         "init_state_path": str(init_resolved),
         "init_state_file": init_resolved.name,
         "horizon": EXPECTED_HORIZON,
-        "source_check": "pinned_hf_libero_paths",
+        "source_check": source_check,
+        **content_identity,
     }
 
 
@@ -2258,6 +2321,7 @@ def build_cpu_environment_runtime(
     config: Mapping[str, Any],
     *,
     phase: str = "compare",
+    task_source_content_pins: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct only the pinned CPU LIBERO environment.
 
@@ -2324,7 +2388,12 @@ def build_cpu_environment_runtime(
         "after": sorted(policy_modules_after),
         "new": newly_imported_policy_modules,
     }
-    task_source = _task_source_evidence(libero, task, root)
+    task_source = _task_source_evidence(
+        libero,
+        task,
+        root,
+        content_pins=task_source_content_pins,
+    )
     env_cfg = make_env_config(
         "libero",
         task=str(task["suite"]),
@@ -2379,6 +2448,7 @@ def build_cpu_runtime(
     *,
     include_policy: bool = True,
     phase: str = "compare",
+    task_source_content_pins: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the pinned vanilla LIBERO env and optional policy stack."""
 
@@ -2387,7 +2457,11 @@ def build_cpu_runtime(
         normalized_phase = "concurrency"
     checkpoint = _require_mapping(config["checkpoint"], "checkpoint")
     base_model = _require_mapping(config["base_model"], "base_model")
-    environment_runtime = build_cpu_environment_runtime(config, phase=normalized_phase)
+    environment_runtime = build_cpu_environment_runtime(
+        config,
+        phase=normalized_phase,
+        task_source_content_pins=task_source_content_pins,
+    )
     env_cfg = environment_runtime["env_cfg"]
     lerobot = environment_runtime["lerobot"]
     env = environment_runtime["env"]

@@ -44,6 +44,13 @@ PHASE = "MICROVALIDATION"
 ROOT_ID = "libero_spatial-task000-init000-seed2027"
 TASK_ID = 0
 INIT_STATE_ID = 0
+TASK_SOURCE_CONTENT_PINS: dict[str, Any] = {
+    "suite": "libero_spatial",
+    "task_id": 0,
+    "init_state_id": 0,
+    "bddl_sha256": "9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b",
+    "init_state_sha256": "cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a",
+}
 
 
 class MicrovalidationError(RuntimeError):
@@ -299,7 +306,11 @@ def run_mv_p2_a(
     selector = select_init_state or m0_baseline_a.select_init_state_before_reset
     runtime: Mapping[str, Any] | None = None
     try:
-        runtime = builder(preflight, phase="compare")
+        runtime = builder(
+            preflight,
+            phase="compare",
+            task_source_content_pins=TASK_SOURCE_CONTENT_PINS,
+        )
         vector_env = runtime.get("env")
         if vector_env is None:
             raise MicrovalidationError("CPU environment runtime did not return env")
@@ -380,6 +391,7 @@ def run_mv_p2_a(
             "dcu_worker_started": False,
             "normal_reset_count": 1,
             "init_state": init_evidence,
+            "task_source": runtime.get("task"),
             "pre_normal_reset_physics": pre_reset_public,
             "reset_info": {
                 "type": type(reset_info).__name__,
@@ -456,7 +468,11 @@ def run_mv_p2_b(
 
     runtime: Mapping[str, Any] | None = None
     try:
-        runtime = builder(preflight, phase="compare")
+        runtime = builder(
+            preflight,
+            phase="compare",
+            task_source_content_pins=TASK_SOURCE_CONTENT_PINS,
+        )
         vector_env = runtime.get("env")
         if vector_env is None:
             raise MicrovalidationError("MV-P2-B CPU environment runtime did not return env")
@@ -524,6 +540,7 @@ def run_mv_p2_b(
                     "dcu_worker_started": False,
                     "terminal_before_switch": terminal_before_switch,
                     "init_state": init_evidence,
+                    "task_source": runtime.get("task"),
                     "reset_info": {
                         "type": type(reset_info).__name__,
                         "keys": sorted(reset_info) if isinstance(reset_info, Mapping) else None,
@@ -572,6 +589,7 @@ def run_mv_p2_b(
             "dcu_worker_started": False,
             "terminal_before_switch": terminal_before_switch,
             "init_state": init_evidence,
+            "task_source": runtime.get("task"),
             "reset_info": {
                 "type": type(reset_info).__name__,
                 "keys": sorted(reset_info) if isinstance(reset_info, Mapping) else None,
@@ -618,7 +636,12 @@ def run_mv_p1(
     runtime: Mapping[str, Any] | None = None
     worker: Mapping[str, Any] | None = None
     try:
-        runtime = builder(preflight, include_policy=False, phase="compare")
+        runtime = builder(
+            preflight,
+            include_policy=False,
+            phase="compare",
+            task_source_content_pins=TASK_SOURCE_CONTENT_PINS,
+        )
         env = runtime.get("env")
         if env is None:
             raise MicrovalidationError("CPU processor runtime did not return env")
@@ -725,6 +748,7 @@ def run_mv_p1(
             "outer_env_step_calls": 0,
             "policy_query_count": 1,
             "init_state": init_evidence,
+            "task_source": runtime.get("task"),
             "reset_info": {
                 "type": type(reset_info).__name__,
                 "keys": sorted(reset_info) if isinstance(reset_info, Mapping) else None,
