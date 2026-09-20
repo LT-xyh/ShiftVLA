@@ -1,200 +1,112 @@
 # ReplayVLA-P1 CURRENT EXECUTION
 
-Status: PREFIX-REEXECUTION MICROVALIDATION AUTHORIZED EXACTLY ONCE
+Status: MV-R1 REPO-ONLY PROVENANCE CORRECTION AUTHORIZED
 Branch: xyh/replayvla-p1
 
 Latest authority:
-- docs/replayvla-p1/17_prefix_reexecution_microvalidation_authorization.md
-
-Reviewed implementation commit:
-- 3669a1b7c2bd05438b40351bc4cf7e066286a6f8
+- docs/replayvla-p1/18_prefix_microvalidation_provenance_correction.md
 
 Scientific route authority:
 - docs/replayvla-p1/16_prefix_reexecution_paper_route.md
 
-Historical exact-state route:
-- paused for Paper-1;
-- F3N/F3b/exact-state repair remain unauthorized.
+Historical microvalidation authority:
+- docs/replayvla-p1/17_prefix_reexecution_microvalidation_authorization.md
 
-## Current permission
+Historical microvalidation evidence:
+- execution HEAD: 32cbe471c4cc9987b64fbff2ac4c98717d664721
+- evidence commit: 33f0e2cb1f699254f92fb7c46df93ec653b8f864
+- focused pytest: PASS (40 passed)
+- harness: BLOCKED before MV-P2-A
+- blocker: DCUPreflightError: LIBERO BDDL/init state escaped pinned hf-libero tree
+- MV-P2-A: NOT_RUN
+- MV-P2-B: NOT_RUN
+- MV-P1: NOT_RUN
+- dynamic/DCU worker launches: 0
+- scientific rollout: false
+- retry/replacement: 0/0
 
-One non-scientific runtime microvalidation is authorized.
+Historical evidence is immutable.
 
-The sequence is fixed:
+## Adjudication
 
-1. focused pytest;
-2. MV-P2-A same-current-state camera intervention;
-3. MV-P2-B switch-index lifecycle;
-4. MV-P1 one-query real DCU explicit-noise select_action;
-5. compact evidence;
-6. STOP.
+The blocker is an inherited provenance-location defect, not a camera/prefix/noise scientific result.
 
-The 40-rollout pilot is NOT authorized.
+Current dcu_preflight resolves the actual installed-LIBERO BDDL/init files and then requires them to
+live under:
 
-## Execution identity
+`<current repo>/external/hf-libero/...`
 
-Implementation under validation:
+The authorized ordinary runtime is relocated and already binds immutable artifacts under
+`/public/home/xuyinghao/workspace/vla/...`.
 
-`3669a1b7c2bd05438b40351bc4cf7e066286a6f8`
+For the pivoted prefix-reexecution Paper-1 route, the task-source admission criterion is the exact
+consumed bytes plus frozen task identity, not current-worktree ancestry.
 
-The branch may contain later docs-only authorization commits.
-Do not modify tracked implementation/config/tests before or during execution.
+## Frozen task0 content identities
 
-## Harness
+BDDL SHA256:
 
-Entry:
+`9b59eb1287802868ad9bc78d58e6d36d4ba31134e679cfdbdf4b0feb660c959b`
 
-`scripts/p1_prefix_reexecution_microvalidate.py`
+Init-state SHA256:
 
-Compact evidence:
+`cbbc73792ce546c9bec181fd328a411d3183074840b282671dee481511381d0a`
 
-`runtime/replayvla-p1/prefix_reexecution_microvalidation.json`
+These hashes are content identities only. This does not reopen F3N/exact-state work.
 
-Recommended transient work directory:
+## Current authorized work
 
-`runs/replayvla-p1/prefix_reexecution_microvalidation.work`
+Repo-only implementation correction named MV-R1.
 
-The compact evidence path is no-overwrite and is absent from the reviewed repository state.
+Implement a narrow content-pinned task-source admission seam that:
 
-## Start
+1. resolves BDDL/init through the installed LIBERO API actually used by runtime;
+2. strictly resolves the resulting files;
+3. verifies regular/readable files;
+4. hashes the exact consumed bytes;
+5. requires exact frozen BDDL/init SHA256;
+6. records actual resolved paths and hashes;
+7. does not require current-repo ancestry;
+8. does not copy, rewrite, redirect, or symlink the files.
 
-~~~bash
-cd /public/home/xuyinghao/workspace/replayvla-p1
+Preserve task/suite/init identity.
 
-GIT_SSH_COMMAND='ssh -F /dev/null -i /public/home/xuyinghao/.ssh/shiftvla_github -o IdentitiesOnly=yes' \
-git fetch origin
+Do not weaken unrelated historical M0 callers. If necessary use an explicit optional expected-content
+binding only for the P1 microvalidation path.
 
-git checkout xyh/replayvla-p1
-git merge --ff-only origin/xyh/replayvla-p1
+## Frozen scientific/runtime parts
 
-git rev-parse HEAD
-git status --short
-~~~
+Do not modify:
+- CameraModder intervention semantics;
+- +15 degree yaw definition;
+- obs/action switch timing;
+- paired-noise semantics;
+- G-P1 remote select_action path;
+- MV-P2-A/P2-B scientific gates;
+- MV-P1 query semantics;
+- installed packages/runtime.
 
-Existing unrelated untracked `runs/replayvla-p1/` is allowed.
+## Repo-only acceptance
 
-If there are unexpected tracked modifications, STOP without reset/clean.
+Tests must include:
+- exact content match PASS outside current repo path;
+- wrong BDDL hash BLOCK;
+- wrong init hash BLOCK;
+- missing/non-regular source BLOCK where testable;
+- actual consumed path/hash evidence;
+- no path rewrite/copy;
+- frozen task/suite/init preserved.
 
-Before invoking the harness, verify:
+## Runtime state
 
-~~~bash
-test ! -e runtime/replayvla-p1/prefix_reexecution_microvalidation.json
-test ! -e runs/replayvla-p1/prefix_reexecution_microvalidation.work
-~~~
-
-If either exists, STOP and do not delete it.
-
-## Execute exactly once
-
-Use the frozen CPU interpreter:
-
-~~~bash
-/public/home/xuyinghao/tmp/shiftvla-libero/bin/python -B \
-  -m scripts.p1_prefix_reexecution_microvalidate \
-  --baseline-config configs/m0/baseline_a.yaml \
-  --output runtime/replayvla-p1/prefix_reexecution_microvalidation.json \
-  --work-dir runs/replayvla-p1/prefix_reexecution_microvalidation.work \
-  --physical-device 1
-~~~
-
-Do not separately rerun focused pytest: the harness owns the gate and records it in the terminal evidence.
-
-Ordinary shell/cwd invocation mistakes may be corrected only if the harness has not created compact evidence.
-
-Once terminal compact evidence exists, do not rerun.
-
-## Fixed runtime gates
-
-Focused pytest must PASS before any real runtime stage.
-
-MV-P2-A must prove:
-- 360x360x3 uint8 agentview;
-- clean image SHA != shifted image SHA;
-- restored-clean SHA == clean SHA;
-- qpos/qvel/ctrl/sim time unchanged during camera-only mutation;
-- camera position/FOV unchanged;
-- clean quaternion exactly restored;
-- no policy/model query.
-
-MV-P2-B must use a fresh CPU env and:
-- arm CS;
-- t_switch 50;
-- one normal reset;
-- 50 wrapper dummy-action steps;
-- obs_0..obs_49 clean;
-- action_49 requests shifted camera for obs_50;
-- final evidence observation_index 50 / preceding_action_index 49 / shifted;
-- policy/model queries 0;
-- early terminal => BLOCKED.
-
-MV-P1 runs only after both P2 gates PASS and must:
-- use physical device 1;
-- create official real feature batch;
-- use paired explicit flow noise for task0/init0/seed2027/query0;
-- execute exactly one FeatureOnlyRemotePolicy.select_action(features, noise=noise);
-- reach official SmolVLAPolicy.select_action(batch, noise=noise);
-- queue before=0, after=0, new_chunk_generated=true;
-- n_action_steps=1;
-- no env.step.
-
-## Evidence handling
-
-Regardless of PASS/BLOCKED:
-
-~~~bash
-git status --short
-git diff --check
-~~~
-
-Do not stage transient work directory.
-
-Stage only:
-
-`runtime/replayvla-p1/prefix_reexecution_microvalidation.json`
-
-if it exists.
-
-Do not use `git add -A`.
-
-Commit a factual evidence-only message and push branch.
-
-If the harness itself fails before compact evidence can be produced because of a filesystem-level condition,
-report it and do not manufacture evidence.
-
-## Forbidden
+MV-R1 real requalification: NOT AUTHORIZED YET.
 
 Do not:
-- modify implementation/config/tests;
-- install/change packages;
-- repair runtime;
-- retry the harness after terminal evidence;
-- run a second microvalidation;
-- run the 40-rollout pilot;
-- compute paper estimands;
-- run F3N/F3b/exact-state work;
-- git reset --hard;
-- git clean;
-- git add -A.
+- rerun historical harness;
+- run LIBERO/DCU;
+- start Codex runtime validation;
+- delete/overwrite historical compact evidence;
+- run pilot;
+- repair F3N/F3b.
 
-## Return to reviewer
-
-Report:
-- execution branch HEAD before harness;
-- implementation commit under validation;
-- evidence commit SHA;
-- remote HEAD;
-- harness final PASS/BLOCKED;
-- focused pytest result;
-- MV-P2-A result and image SHA relations;
-- MV-P2-A physics invariance;
-- MV-P2-B result, reset count, wrapper step count, obs50 camera evidence, terminal-before-switch;
-- MV-P1 result;
-- worker/device identity;
-- explicit-noise presence;
-- queue before/after/new_chunk_generated;
-- policy/model query counts;
-- compact evidence path;
-- final git status.
-
-Even on PASS: STOP.
-Pilot remains NOT AUTHORIZED.
+After one minimal correction candidate, return to independent reviewer.
